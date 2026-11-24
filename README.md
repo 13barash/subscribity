@@ -28,7 +28,18 @@ a few days before something renews, so you have time to cancel what you no longe
 - **Find subscriptions you forgot about.** Connect your email (Gmail, Yahoo or iCloud) and
   Subscribity looks through your receipts, then shows a list of the subscriptions it found.
   You choose what to add. Works with your PayPal history too.
-- **Add things fast.** Ready-made templates for popular services, or type your own.
+- **Cancel in one click.** Every subscription has a **Manage / cancel** button that opens the
+  right account page (for example Apple subscriptions, Netflix or Spotify account). You can set
+  your own link too.
+- **Spot what you don't use.** On each reminder day you can mark a subscription with
+  **Don't use it anymore**. Subscribity shows how much you'd save per year and takes you to its
+  cancel page.
+- **Know when prices go up.** If your email shows a higher charge than the price you saved,
+  you get a notification.
+- **See where the money goes.** Yearly cost of every subscription, your most expensive ones,
+  and a chart of what you actually spent each month over the last year.
+- **Add things fast.** Search 60 popular services in 10 groups (streaming, music, AI, cloud,
+  gaming and more), or type your own. Keep your own lists of categories and payment methods.
 - **Bring your list with you.** Import from a CSV or JSON file (for example an export from
   another subscription tracker) and export your list to CSV at any time.
 - **Your data is safe.** Automatic weekly backups (the last 30 days are kept) that you can
@@ -67,9 +78,9 @@ Subscribity is built to stay out of your way:
 | | Memory used |
 |---|---|
 | Waiting in the tray | about 2 MB |
-| While the window is open | about 70–90 MB, all given back when you close it |
+| While the window is open | about 60–120 MB, all given back when you close it |
 
-The whole app is a single file of about 1 MB. No installer, no background services.
+The whole app is a single file of about 1.2 MB. No installer, no background services.
 
 ## Updating
 

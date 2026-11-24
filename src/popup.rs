@@ -4,6 +4,7 @@
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
@@ -19,6 +20,8 @@ pub struct Item {
     pub price: String,
     pub tone: u8, // 0 normal, 1 soon, 2 today, 3 trial
     pub icon: String, // icons.rs cache key: App Store artwork URL, else domain; "" = letter tile
+    pub flag: bool, // reminder day (active, not flagged, due within the reminder window): show "Don't use it anymore"
+    pub unused: bool, // already marked unused: show "Unused"
 }
 
 pub struct Data {
@@ -34,16 +37,18 @@ pub enum Action {
     Add,
     Edit(u32),
     Review,
+    Unused(u32), // "Don't use it anymore" on a reminder-day row (subscription id)
 }
 
 struct State {
     hwnd: HWND,
     data: Data,
     hover: i32,
-    targets: Vec<(RECT, i32)>, // hit areas; i32: -1 open, -2 add, -3 review, -4 close, >=0 item index
+    targets: Vec<(RECT, i32)>, // hit areas; i32: -1 open, -2 add, -3 review, -4 close, 0..99 item index, 100+i "Don't use it anymore" on item i
     fonts: [HFONT; 7], // 5, 6: Arial for ₪ (Segoe UI hints it into a box below ~18 px)
     scale: f32,
     closing: bool, // DestroyWindow already called (it re-enters via WM_ACTIVATE)
+    logo: HICON, // the exe's own icon (resource 1), drawn in the header; null if missing
     bmps: Vec<HBITMAP>, // cached icon per item (null: letter tile), freed on destroy
 }
 
@@ -84,16 +89,21 @@ static mut CLOSED_AT: u32 = 0;
 static mut ON_ACTION: Option<fn(Action)> = None;
 
 const W_DIP: i32 = 340;
-const BG: u32 = 0x00271D1B;
-const LINE: u32 = 0x0042302D;
-const HOVER: u32 = 0x00342623;
-const TEXT: u32 = 0x00F5EDEC;
-const MUTED: u32 = 0x00B39D9A;
-const ACCENT: u32 = 0x00FF7C7C;
-const RED: u32 = 0x004D48E5;
-const ORANGE: u32 = 0x000C89E8;
-const PURPLE: u32 = 0x00FA8BA7;
-const PALETTE: [u32; 10] = [0x00F05B5B, 0x00F65C8B, 0x009948EC, 0x001673F9, 0x00A6B814, 0x00E9A50E, 0x005EC522, 0x0008B3EA, 0x004444EF, 0x00F16663];
+// Colors are 0x00BBGGRR (GDI COLORREF), same family as ui.html.
+const BG: u32 = 0x0016110E; // #0E1116
+const CARD: u32 = 0x00221B16; // #161B22
+const LINE: u32 = 0x002B2624; // rgba(255,255,255,.09) over BG = #24262B
+const HOVER: u32 = 0x0028211C; // #1C2128
+const TEXT: u32 = 0x00F1ECE8; // #E8ECF1
+const MUTED: u32 = 0x00B2A49A; // #9AA4B2
+const ACCENT: u32 = 0x00C9A67F; // #7FA6C9
+const ACCENT_HOVER: u32 = 0x00D3B593; // #93B5D3
+const PRIMARY: u32 = ACCENT; // flat fill of the main button (BG-colored text), no gradient
+const RED: u32 = 0x007A70D9; // #D9707A
+const ORANGE: u32 = 0x005BA5D9; // #D9A55B
+const PILL_HOVER: u32 = 0x0038312E; // #2E3138
+// Same list as ui.html PALETTE (#58779A ... #4F6F8F).
+const PALETTE: [u32; 10] = [0x009A7758, 0x0094774F, 0x007D7B4F, 0x00637B55, 0x004C786E, 0x004A7182, 0x004C6898, 0x006E63A0, 0x008A746A, 0x008F6F4F];
 
 fn color_for(name: &str) -> u32 {
     // Same hash as the window UI, so avatars match.
@@ -211,6 +221,7 @@ unsafe fn show(hinst: HINSTANCE, scale: f32, anchor: (HWND, u32), data: Data) {
     STATE = Some(State {
         hwnd,
         bmps: load_icons(&data.items),
+        logo: LoadImageW(GetModuleHandleW(null()), 1 as *const u16, IMAGE_ICON, (20.0 * scale).round() as i32, (20.0 * scale).round() as i32, 0) as HICON,
         data,
         hover: i32::MIN,
         closing: false,
@@ -288,11 +299,16 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
     st.targets.clear();
     let d = &st.data;
 
-    text(dc, "Per month", rc(18, 14, 200, 18), f_small, MUTED, DT_LEFT);
+    // Hero block (total + budget) on a card. Radii below are true radii: RoundRect takes diameters.
+    fill(dc, rc(8, 6, W_DIP - 16, if d.budget.is_some() { 104 } else { 70 }), CARD, s(32));
+    if !st.logo.is_null() {
+        DrawIconEx(dc, s(18), s(12), st.logo, s(20), s(20), 0, null_mut(), DI_NORMAL);
+    }
+    text(dc, "Per month", rc(44, 14, 174, 18), f_small, MUTED, DT_LEFT);
     text(dc, &d.caption, rc(100, 14, 182, 18), f_small, MUTED, DT_RIGHT);
     // Close button, top right (the popup also closes on Esc or a click outside).
     let x_btn = rc(290, 8, 32, 32);
-    fill(dc, x_btn, if st.hover == -4 { HOVER } else { LINE }, s(10));
+    fill(dc, x_btn, if st.hover == -4 { HOVER } else { LINE }, s(24));
     text(dc, "×", x_btn, f_big, if st.hover == -4 { TEXT } else { MUTED }, DT_CENTER);
     st.targets.push((x_btn, -4));
     text(dc, &d.total, rc(18, 34, 304, 36), f_big, TEXT, DT_LEFT);
@@ -306,10 +322,10 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
     }
     if d.found > 0 {
         let row = rc(8, y + 3, W_DIP - 16, 34);
-        fill(dc, row, if st.hover == -3 { HOVER } else { LINE }, s(10));
+        fill(dc, row, if st.hover == -3 { HOVER } else { CARD }, s(24));
         let n = if d.found == 1 { "1 new subscription found".to_string() } else { format!("{} new subscriptions found", d.found) };
         text(dc, &n, rc(18, y + 3, 230, 34), f_name, TEXT, DT_LEFT);
-        text(dc, "Review", rc(246, y + 3, 76, 34), f_name, ACCENT, DT_RIGHT);
+        text(dc, "Review", rc(246, y + 3, 76, 34), f_name, if st.hover == -3 { ACCENT_HOVER } else { ACCENT }, DT_RIGHT);
         st.targets.push((row, -3));
         y += 40;
     }
@@ -322,20 +338,26 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
     }
     for (i, it) in d.items.iter().enumerate() {
         let row = rc(8, y, W_DIP - 16, 46);
+        let pill = rc(196, y + 23, 126, 20);
+        let pill_on = it.flag && !it.unused;
+        // The pill is pushed before the row: hit() takes the first match.
+        if pill_on {
+            st.targets.push((pill, 100 + i as i32));
+        }
         if st.hover == i as i32 {
-            fill(dc, row, HOVER, s(10));
+            fill(dc, row, HOVER, s(24));
         }
         st.targets.push((row, i as i32));
         let av = color_for(&it.name);
         let a = rc(18, y + 8, 30, 30);
         let bmp = st.bmps.get(i).copied().unwrap_or(null_mut());
         if !bmp.is_null() {
-            crate::icons::draw(dc, a, bmp, av, s(8), s(3));
+            crate::icons::draw(dc, a, bmp, av, s(20), s(3));
         } else {
             let b = CreateSolidBrush(av);
             let ob = SelectObject(dc, b);
             let op = SelectObject(dc, GetStockObject(NULL_PEN));
-            RoundRect(dc, a.left, a.top, a.right, a.bottom, s(9), s(9));
+            RoundRect(dc, a.left, a.top, a.right + 1, a.bottom + 1, s(20), s(20));
             SelectObject(dc, op);
             SelectObject(dc, ob);
             DeleteObject(b);
@@ -343,8 +365,15 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
             text(dc, &letter, a, f_name, 0x00FFFFFF, DT_CENTER);
         }
         text(dc, &it.name, rc(58, y + 5, 170, 20), f_name, TEXT, DT_LEFT);
-        let tone = match it.tone { 1 => ORANGE, 2 => RED, 3 => PURPLE, _ => MUTED };
-        text(dc, &it.when, rc(58, y + 24, 170, 18), f_sub, tone, DT_LEFT);
+        let tone = match it.tone { 1 => ORANGE, 2 => RED, 3 => ACCENT, _ => MUTED };
+        text(dc, &it.when, rc(58, y + 24, if it.flag || it.unused { 134 } else { 170 }, 18), f_sub, tone, DT_LEFT);
+        if pill_on {
+            let hot = st.hover == 100 + i as i32;
+            fill(dc, pill, if hot { PILL_HOVER } else { LINE }, s(24));
+            text(dc, "Don't use it anymore", pill, f_sub, if hot { ACCENT_HOVER } else { ACCENT }, DT_CENTER);
+        } else if it.unused {
+            text(dc, "Unused", pill, f_sub, ORANGE, DT_RIGHT);
+        }
         text_sym(dc, &it.price, rc(226, y + 5, 96, 20), f_name, f_name_sym, TEXT, DT_RIGHT);
         y += 46;
     }
@@ -352,9 +381,9 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
     y += 13;
     let open = rc(18, y, 196, 34);
     let add = rc(222, y, 100, 34);
-    fill(dc, open, if st.hover == -1 { 0x00FF8E8E } else { ACCENT }, s(10));
-    fill(dc, add, if st.hover == -2 { HOVER } else { LINE }, s(10));
-    text(dc, "Open Subscribity", open, f_btn, 0x00FFFFFF, DT_CENTER);
+    fill(dc, open, if st.hover == -1 { ACCENT } else { PRIMARY }, s(24));
+    fill(dc, add, if st.hover == -2 { HOVER } else { LINE }, s(24));
+    text(dc, "Open Subscribity", open, f_btn, BG, DT_CENTER);
     text(dc, "+ Add", add, f_btn, TEXT, DT_CENTER);
     st.targets.push((open, -1));
     st.targets.push((add, -2));
@@ -420,6 +449,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                     destroy(st);
                     None
                 }
+                i if i >= 100 => st.data.items.get(i as usize - 100).map(|it| Action::Unused(it.id)),
                 i if i >= 0 => st.data.items.get(i as usize).map(|it| Action::Edit(it.id)),
                 _ => None,
             };
@@ -444,6 +474,9 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 DeleteObject(f);
             }
             free_icons(st);
+            if !st.logo.is_null() {
+                DestroyIcon(st.logo);
+            }
             STATE = None;
             CLOSED_AT = GetTickCount();
             crate::trim_memory();

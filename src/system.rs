@@ -111,8 +111,35 @@ pub fn ensure_integration() {
     let kb = std::fs::metadata(&exe).map(|m| (m.len() / 1024) as u32).unwrap_or(0);
     reg_set_dword(UNINSTALL_KEY, "EstimatedSize", kb);
 
-    if moved && autostart_enabled() {
+    // Repair a stale Run value (exe moved or reinstalled elsewhere). Absent = autostart off: leave it.
+    let stale = reg_get(RUN_KEY, APP_NAME).map_or(false, |v| run_target_differs(&v, &exe));
+    if (moved && autostart_enabled()) || stale {
         set_autostart(true);
+    }
+}
+
+/// True when the Run value (optionally quoted, optional args) points to a different exe than `exe`.
+fn run_target_differs(value: &str, exe: &Path) -> bool {
+    let v = value.trim();
+    let target = match v.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(""),
+        None => v,
+    };
+    !target.eq_ignore_ascii_case(&exe.display().to_string())
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::run_target_differs;
+    use std::path::Path;
+
+    #[test]
+    fn run_target_compare() {
+        let exe = Path::new(r"C:\Users\n\SubscribityApp\Subscribity.exe");
+        assert!(!run_target_differs(r#""C:\Users\n\SubscribityApp\Subscribity.exe""#, exe));
+        assert!(!run_target_differs(r"c:\users\N\subscribityapp\SUBSCRIBITY.exe", exe));
+        assert!(run_target_differs(r#""C:\Users\n\Subscribity\Subscribity.exe""#, exe));
+        assert!(run_target_differs("", exe));
     }
 }
 

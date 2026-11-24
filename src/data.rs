@@ -27,10 +27,11 @@ pub const OWN_FILES: [&str; 19] = [
 /// Email scanner: results cache and the DPAPI-protected mailbox login (never in backups).
 pub const SCAN_FILE: &str = "scan.tsv";
 pub const MAIL_KEY_FILE: &str = "mail.key";
-const SETTINGS_KEYS: [&str; 16] = [
+const SETTINGS_KEYS: [&str; 20] = [
     "main_currency", "default_remind_days", "budget", "budget_alerted", "rates_base", "rates_date",
     "update_check", "update_last", "latest_version", "update_notified", "window",
-    "scan_auto", "scan_period", "scan_last", "scan_new", "scan_error",
+    "scan_auto", "scan_period", "scan_last", "scan_new", "scan_error", "payment_methods",
+    "categories", "scan_price_up", "see_through",
 ];
 const BACKUP_EVERY_DAYS: i32 = 7;
 const BACKUP_KEEP_DAYS: i32 = 30;
@@ -54,6 +55,8 @@ pub struct Sub {
     pub history: Vec<(i32, f64)>,  // (day the price changed, price before the change)
     pub icon: String,              // App Store artwork URL (https mzstatic, <= 300 chars), "" if none
     pub first: i32,                // real first charge (can precede `start`), 0 = unknown
+    pub unused: i32,               // day the user flagged it "not using it anymore", 0 = not flagged
+    pub manage: String,            // user's manage/cancel link override (http(s), <= 200 chars), "" = built-in
 }
 
 impl Sub {
@@ -81,6 +84,17 @@ pub struct Settings {
     pub scan_last: i32,     // day of the last successful scan, 0 = never
     pub scan_new: u32,      // candidates found by the last auto-scan, not reviewed yet
     pub scan_error: String, // "auth": the auto-scan stopped until the user reconnects
+    /// Payment methods the user manages in Settings. None = never edited (older settings.ini):
+    /// the window then offers the methods already used by subscriptions.
+    pub pay_methods: Option<Vec<String>>,
+    /// Categories the user manages in Settings. None = never edited: the window offers the
+    /// categories used by subscriptions plus the template categories.
+    pub categories: Option<Vec<String>>,
+    /// Scanner: tracked subscriptions charged more than their saved price (id, new price, currency),
+    /// replaced by every scan.
+    pub price_up: Vec<(u32, f64, String)>,
+    /// See-through window (no blur) instead of wallpaper glass. Off by default.
+    pub see_through: bool,
 }
 
 impl Default for Settings {
@@ -102,6 +116,10 @@ impl Default for Settings {
             scan_last: 0,
             scan_new: 0,
             scan_error: String::new(),
+            pay_methods: None,
+            categories: None,
+            price_up: Vec::new(),
+            see_through: false,
         }
     }
 }
@@ -122,6 +140,7 @@ pub struct Store {
     pub rates: HashMap<String, f64>, // units of currency per 1 main currency
     pub notified: HashSet<String>,
     pub ack: HashSet<String>,
+    pub price_alerted: HashSet<String>, // "<id>|<price 2 decimals>": price-increase alert already shown
     pub payments: Vec<Payment>,
     pub cursors: HashMap<u32, i32>, // last day checked for payments, per subscription
     pub first_run: bool,
@@ -245,6 +264,18 @@ pub fn monthly(s: &Sub) -> f64 {
     }
 }
 
+/// Cost per year in the subscription's own currency (= `monthly * 12`, computed so that a
+/// yearly price comes back exactly): day 365.2425/n, week 52.1775/n, month 12/n, year 1/n.
+pub fn yearly(s: &Sub) -> f64 {
+    let n = s.every.max(1) as f64;
+    s.price * match s.unit {
+        0 => 365.2425,
+        1 => 52.1775,
+        2 => 12.0,
+        _ => 1.0,
+    } / n
+}
+
 // ---------- money ----------
 
 pub fn symbol(cur: &str) -> &'static str {
@@ -343,6 +374,33 @@ fn unknown_settings(t: &str) -> String {
         .collect()
 }
 
+/// `scan_price_up=` items `id:price:cur` joined by `|`; malformed items are skipped.
+fn parse_price_up(v: &str) -> Vec<(u32, f64, String)> {
+    v.split('|')
+        .filter_map(|e| {
+            let mut p = e.trim().splitn(3, ':');
+            let id = p.next()?.parse::<u32>().ok()?;
+            let price = p.next()?.parse::<f64>().ok().filter(|x| x.is_finite() && *x > 0.0)?;
+            let cur = p.next()?.trim();
+            (cur.len() == 3 && cur.bytes().all(|b| b.is_ascii_uppercase())).then(|| (id, price, cur.to_string()))
+        })
+        .collect()
+}
+
+/// A settings list (payment methods, categories): trimmed, max 40 chars, no `|` or line breaks
+/// (the ini separator), no case-insensitive duplicates, max 50.
+pub fn clean_list(items: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for i in items {
+        let t: String = i.replace(['|', '\r', '\n', '\t'], " ").trim().chars().take(40).collect();
+        let t = t.trim().to_string();
+        if !t.is_empty() && !out.iter().any(|x| x.eq_ignore_ascii_case(&t)) && out.len() < 50 {
+            out.push(t);
+        }
+    }
+    out
+}
+
 fn parse_settings(t: &str) -> Settings {
     let mut s = Settings::default();
     for line in t.lines() {
@@ -370,6 +428,10 @@ fn parse_settings(t: &str) -> Settings {
             "scan_last" => s.scan_last = parse_iso(v).unwrap_or(0),
             "scan_new" => s.scan_new = v.parse().unwrap_or(0),
             "scan_error" => s.scan_error = v.into(),
+            "payment_methods" => s.pay_methods = Some(clean_list(v.split('|').map(str::to_string))),
+            "categories" => s.categories = Some(clean_list(v.split('|').map(str::to_string))),
+            "scan_price_up" => s.price_up = parse_price_up(v),
+            "see_through" => s.see_through = v == "1",
             _ => {}
         }
     }
@@ -386,6 +448,7 @@ impl Store {
             rates: HashMap::new(),
             notified: HashSet::new(),
             ack: HashSet::new(),
+            price_alerted: HashSet::new(),
             payments: Vec::new(),
             cursors: HashMap::new(),
         };
@@ -414,6 +477,8 @@ impl Store {
                     history: f.get(14).map(|h| parse_history(h)).unwrap_or_default(),
                     icon: f.get(15).map(|u| unesc(u)).filter(|u| u.len() <= 300).unwrap_or_default(),
                     first: f.get(16).and_then(|d| parse_iso(d)).unwrap_or(0),
+                    unused: f.get(17).and_then(|d| parse_iso(d)).unwrap_or(0),
+                    manage: f.get(18).map(|u| unesc(u)).filter(|u| u.len() <= 200).unwrap_or_default(),
                 });
             }
         }
@@ -431,6 +496,7 @@ impl Store {
                 match line.split_once('\t') {
                     Some(("n", k)) => { st.notified.insert(k.into()); }
                     Some(("a", k)) => { st.ack.insert(k.into()); }
+                    Some(("p", k)) => { st.price_alerted.insert(k.into()); }
                     _ => {}
                 }
             }
@@ -440,15 +506,16 @@ impl Store {
     }
 
     pub fn save_subs(&self) {
-        let mut t = String::from("id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\turl\ttrial\tprice_history\ticon\tfirst_charge\n");
+        let mut t = String::from("id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\turl\ttrial\tprice_history\ticon\tfirst_charge\tunused_since\tmanage_url\n");
+        let opt = |d: i32| if d > 0 { iso(d) } else { String::new() };
         for s in &self.subs {
             let hist: Vec<String> = s.history.iter().map(|(d, p)| format!("{}:{}", iso(*d), p)).collect();
             t.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 s.id, esc(&s.name), s.price, s.cur, s.every, s.unit, iso(s.start),
                 esc(&s.category), esc(&s.payment), s.remind, s.active as u8, esc(&s.notes),
                 esc(&s.url), s.trial as u8, hist.join(";"), esc(&s.icon),
-                if s.first > 0 { iso(s.first) } else { String::new() }
+                opt(s.first), opt(s.unused), esc(&s.manage)
             ));
         }
         write_atomic(&self.dir.join(SUBS_FILE), &t);
@@ -470,6 +537,15 @@ impl Store {
             s.window.0, s.window.1, s.window.2, s.window.3,
             if s.scan_auto { "weekly" } else { "off" }, s.scan_period, opt(s.scan_last), s.scan_new, s.scan_error
         );
+        if let Some(m) = &s.pay_methods {
+            t.push_str(&format!("payment_methods={}\n", m.join("|")));
+        }
+        if let Some(c) = &s.categories {
+            t.push_str(&format!("categories={}\n", c.join("|")));
+        }
+        let ups: Vec<String> = s.price_up.iter().map(|(id, p, c)| format!("{}:{}:{}", id, p, c)).collect();
+        t.push_str(&format!("scan_price_up={}\n", ups.join("|")));
+        t.push_str(&format!("see_through={}\n", s.see_through as u8));
         t.push_str(&unknown_settings(&old));
         write_atomic(&self.dir.join(SETTINGS_FILE), &t);
         self.settings = s;
@@ -494,6 +570,9 @@ impl Store {
         }
         for k in &self.ack {
             t.push_str(&format!("a\t{}\n", k));
+        }
+        for k in &self.price_alerted {
+            t.push_str(&format!("p\t{}\n", k));
         }
         write_atomic(&self.dir.join(STATE_FILE), &t);
     }
@@ -783,6 +862,113 @@ mod tests {
     }
 
     #[test]
+    fn payment_methods_roundtrip_and_old_files() {
+        let dir = temp_dir("paymethods");
+        let mut st = Store::load(dir.clone());
+        assert!(st.settings.pay_methods.is_none()); // older settings.ini: never edited
+        st.edit_settings(|s| s.pay_methods = Some(clean_list(["  Visa 4242 ".into(), "visa 4242".into(), "a|b".into(), "".into()])));
+        assert_eq!(read_settings(&dir).pay_methods.unwrap(), vec!["Visa 4242".to_string(), "a b".to_string()]);
+        st.edit_settings(|s| s.pay_methods = Some(Vec::new())); // all removed stays "edited", not None
+        assert_eq!(read_settings(&dir).pay_methods, Some(Vec::new()));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn categories_and_price_up_roundtrip_and_old_files() {
+        let dir = temp_dir("cats");
+        let mut st = Store::load(dir.clone());
+        assert!(st.settings.categories.is_none() && st.settings.price_up.is_empty());
+        let long = "x".repeat(60);
+        st.edit_settings(|s| {
+            s.categories = Some(clean_list(["Streaming".into(), "streaming".into(), " AI ".into(), long.clone()]));
+            s.price_up = vec![(12, 17.99, "USD".into()), (40, 54.9, "ILS".into())];
+        });
+        let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
+        assert!(t.contains("scan_price_up=12:17.99:USD|40:54.9:ILS\n"), "{}", t);
+        let s = read_settings(&dir);
+        assert_eq!(s.categories.clone().unwrap(), vec!["Streaming".to_string(), "AI".into(), "x".repeat(40)]);
+        assert_eq!(s.price_up, vec![(12, 17.99, "USD".to_string()), (40, 54.9, "ILS".to_string())]);
+        // Each key is written once; other edits keep them.
+        st.edit_settings(|s| s.budget = 5.0);
+        let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
+        assert_eq!((t.matches("categories=").count(), t.matches("scan_price_up=").count()), (1, 1));
+        assert_eq!(read_settings(&dir).price_up.len(), 2);
+        st.edit_settings(|s| s.categories = Some(Vec::new()));
+        assert_eq!(read_settings(&dir).categories, Some(Vec::new()));
+        // Malformed items are skipped, good ones kept.
+        let p = parse_price_up("1:2.5:USD|x:1:USD|2::USD|3:-1:USD|4:9:usd|5:9|6:inf:USD||7:3:EUR");
+        assert_eq!(p, vec![(1, 2.5, "USD".to_string()), (7, 3.0, "EUR".to_string())]);
+        assert!(parse_settings("scan_price_up=\n").price_up.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn yearly_cost_per_cycle() {
+        let s = |price: f64, every: u32, unit: u8| Sub { price, every, unit, ..Default::default() };
+        assert_eq!(yearly(&s(9.99, 1, 3)), 9.99); // 1 year = price
+        assert_eq!(yearly(&s(100.0, 2, 3)), 50.0); // 2 years = half
+        assert_eq!(yearly(&s(30.0, 3, 2)), 120.0); // 3 months = x4
+        assert_eq!(yearly(&s(15.49, 1, 2)), 15.49 * 12.0);
+        assert!((yearly(&s(2.0, 1, 1)) - 104.355).abs() < 1e-9); // weekly = x52.1775
+        assert!((yearly(&s(1.0, 1, 0)) - 365.2425).abs() < 1e-9);
+        assert_eq!(yearly(&s(0.0, 1, 2)), 0.0);
+        assert_eq!(yearly(&s(10.0, 0, 2)), 120.0); // every 0 counts as 1
+        for (e, u) in [(1, 0), (2, 1), (1, 2), (6, 2), (1, 3), (3, 3)] {
+            let x = s(7.77, e, u);
+            assert!((yearly(&x) - monthly(&x) * 12.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn unused_manage_columns_roundtrip_and_old_files_load() {
+        let dir = temp_dir("subs-unused");
+        let mut st = Store::load(dir.clone());
+        let d = days_from_civil(2026, 11, 24);
+        st.subs.push(Sub { id: 1, name: "N".into(), every: 1, unit: 2, start: d, unused: d, manage: "https://a.com/x\ty".into(), active: true, ..Default::default() });
+        st.subs.push(Sub { id: 2, name: "P".into(), every: 1, unit: 2, start: d, active: true, ..Default::default() });
+        st.save_subs();
+        let t = fs::read_to_string(dir.join(SUBS_FILE)).unwrap();
+        assert!(t.lines().all(|l| l.split('\t').count() == 19), "{}", t);
+        let back = Store::load(dir.clone());
+        assert_eq!((back.subs[0].unused, back.subs[0].manage.as_str()), (d, "https://a.com/x\ty"));
+        assert_eq!((back.subs[1].unused, back.subs[1].manage.as_str()), (0, ""));
+        // v0.3.2: 17 columns (icon + first_charge, no unused/manage).
+        fs::write(
+            dir.join(SUBS_FILE),
+            "id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\turl\ttrial\tprice_history\ticon\tfirst_charge\n\
+             5\tNetflix\t15.49\tUSD\t1\t2\t2026-10-16\tStreaming\tVisa\t3\t1\t\tnetflix.com\t0\t2026-01-01:13.99\t\t2026-10-15\n",
+        )
+        .unwrap();
+        let old = Store::load(dir.clone());
+        let s = &old.subs[0];
+        assert_eq!((s.id, s.name.as_str(), s.price, s.url.as_str(), s.first, s.unused, s.manage.as_str()), (5, "Netflix", 15.49, "netflix.com", days_from_civil(2026, 10, 15), 0, ""));
+        assert_eq!(s.history, vec![(days_from_civil(2026, 1, 1), 13.99)]);
+        // v0.1.0: 12 columns.
+        fs::write(dir.join(SUBS_FILE), "id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\n3\tOld\t5\tUSD\t1\t2\t2026-10-16\t\t\t3\t1\t\n").unwrap();
+        let old = Store::load(dir.clone());
+        assert_eq!((old.subs.len(), old.subs[0].unused, old.subs[0].manage.as_str()), (1, 0, ""));
+        // Bad values: unparsable date = not flagged, over-long override dropped.
+        let long = format!("https://a.com/{}", "x".repeat(200));
+        fs::write(dir.join(SUBS_FILE), format!("h\n4\tX\t1\tUSD\t1\t2\t2026-10-16\t\t\t3\t1\t\t\t0\t\t\t\tnope\t{}\n", long)).unwrap();
+        let bad = Store::load(dir.clone());
+        assert_eq!((bad.subs[0].unused, bad.subs[0].manage.as_str()), (0, ""));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn price_alerted_state_roundtrip_and_old_state() {
+        let dir = temp_dir("state-p");
+        fs::write(dir.join(STATE_FILE), "n\t1|2026-11-01\na\tbudget\n").unwrap(); // v0.3.2 state.tsv
+        let mut st = Store::load(dir.clone());
+        assert!(st.price_alerted.is_empty() && st.notified.len() == 1 && st.ack.len() == 1);
+        st.price_alerted.insert("12|17.99".into());
+        st.save_state();
+        let back = Store::load(dir.clone());
+        assert!(back.price_alerted.contains("12|17.99") && back.notified.contains("1|2026-11-01") && back.ack.contains("budget"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn payments_are_logged_once_per_renewal() {
         let dir = temp_dir("payments");
         let mut st = Store::load(dir.clone());
@@ -857,6 +1043,14 @@ mod tests {
         assert!(t.contains("theme=system\n") && t.matches("future_key").count() == 1 && t.matches("scan_auto=").count() == 1);
         assert_eq!(parse_settings("scan_period=5\n").scan_period, 12);
         assert!(!parse_settings("scan_auto=yes\n").scan_auto);
+        // v0.4.0 see_through: default off, round-trips once, bad values read as off.
+        assert!(!s.see_through && !parse_settings("see_through=2\n").see_through);
+        st.edit_settings(|s| s.see_through = true);
+        assert!(read_settings(&dir).see_through);
+        st.edit_settings(|s| s.window = (3, 4, 900, 700));
+        let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
+        assert_eq!((t.matches("see_through=").count(), t.matches("future_key").count()), (1, 1));
+        assert!(read_settings(&dir).see_through);
         let _ = fs::remove_dir_all(dir);
     }
 

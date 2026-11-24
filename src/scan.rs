@@ -122,11 +122,28 @@ pub fn state() -> Value {
     })
 }
 
-/// Subscriptions were added, edited or deleted: candidates re-mark as tracked or not.
+/// Subscriptions were added, edited or deleted: candidates re-mark as tracked or not, and the
+/// scanner's price-increase list (`scan_price_up`) follows (an updated price drops its entry).
 pub fn subs_changed() {
-    if app().scan.file.is_some() {
+    let a = app();
+    if a.scan.file.is_some() || !a.store.settings.price_up.is_empty() {
+        let _ = sync_price_up(); // callers post WM_RELOAD right after
+    }
+    if a.scan.file.is_some() {
         send_list();
     }
+}
+
+/// Writes `scan_price_up` when the cached scan results say something else than settings.
+/// True when it changed (the tray should reload to announce new increases).
+fn sync_price_up() -> bool {
+    let a = app();
+    let ups = file().price_ups(&a.store.subs, today());
+    let changed = ups != a.store.settings.price_up;
+    if changed {
+        a.store.edit_settings(|s| s.price_up = ups);
+    }
+    changed
 }
 
 fn s_of(v: &Value, k: &str) -> String {
@@ -360,6 +377,9 @@ pub fn on_message(kind: usize, lp: isize) {
                 edit(|f| apply(f, o));
                 backfill_subs();
                 look_up_apps();
+                if sync_price_up() {
+                    crate::after_change();
+                }
             }
             if ok {
                 let day = today();

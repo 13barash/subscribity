@@ -87,16 +87,46 @@ fn prune(root: &Path, keep: &HashSet<String>) {
     }
 }
 
-/// Downloads up to 8 missing icons for `keys` (all subs' keys, popup rows first), writes them
-/// to the cache and prunes files no key refers to. Returns how many new images were saved.
+/// Whether `k` is a key we would ever fetch or serve (bare domain or App Store artwork URL).
+/// Gate for anything that turns a request path into a cache lookup.
+pub fn valid_key(k: &str) -> bool {
+    source(k).is_some()
+}
+
+/// Brand color of a cached icon as 0xRRGGBB: the average of its saturated, non-white pixels.
+/// None when the file is missing/not our 64x64 BMP, or the icon is grey/white/black.
+pub fn tint(p: &Path) -> Option<u32> {
+    let b = fs::read(p).ok()?;
+    let off = u32::from_le_bytes(b.get(10..14)?.try_into().ok()?) as usize;
+    let px = b.get(off..)?.get(..(SIZE * SIZE * 3) as usize)?;
+    let (mut r, mut g, mut bl, mut n) = (0u64, 0u64, 0u64, 0u64);
+    for c in px.chunks_exact(3) {
+        let (cb, cg, cr) = (c[0] as i32, c[1] as i32, c[2] as i32);
+        let (hi, lo) = (cb.max(cg).max(cr), cb.min(cg).min(cr));
+        if hi - lo < 48 || lo > 225 || hi < 60 {
+            continue; // grey, near-white or near-black
+        }
+        r += cr as u64;
+        g += cg as u64;
+        bl += cb as u64;
+        n += 1;
+    }
+    if n < 40 {
+        return None; // under 1% of the tile: not a colored icon
+    }
+    Some(((r / n) as u32) << 16 | ((g / n) as u32) << 8 | (bl / n) as u32)
+}
+
+/// Downloads up to `max` missing icons for `keys` (all subs' keys, popup rows first), writes
+/// them to the cache and prunes files no key refers to. Returns how many new images were saved.
 /// Stops at the first network error (offline: nothing is marked, the next run tries again).
 /// Helper process only: loads gdiplus.dll.
-pub fn fetch_missing(dir: &Path, keys: &[String]) -> u32 {
+pub fn fetch_missing(dir: &Path, keys: &[String], max: usize) -> u32 {
     let root = dir.join(DIR);
     let mut seen = HashSet::new();
     let keys: Vec<&String> = keys.iter().filter(|k| source(k).is_some() && seen.insert(k.as_str())).collect();
     prune(&root, &keys.iter().map(|k| format!("{:016x}", fnv1a(k))).collect());
-    let todo: Vec<&String> = keys.into_iter().filter(|k| is_due(&path(dir, k))).take(MAX_PER_RUN).collect();
+    let todo: Vec<&String> = keys.into_iter().filter(|k| is_due(&path(dir, k))).take(max).collect();
     // Created once here, never per file: if uninstall removes the folder meanwhile, writes fail.
     if todo.is_empty() || fs::create_dir_all(&root).is_err() {
         return 0;
@@ -275,19 +305,25 @@ impl Gdip {
         }
     }
 
+    /// Image file → GDI bitmap (alpha composited on white); null on failure. Caller frees it.
+    unsafe fn hbitmap(&self, p: &Path) -> HBITMAP {
+        let mut img = null_mut();
+        let mut hb: HBITMAP = null_mut();
+        if (self.from_file)(crate::w(&p.to_string_lossy()).as_ptr(), &mut img) == 0 && !img.is_null() {
+            (self.to_hbitmap)(img, &mut hb, 0xFFFF_FFFF);
+        }
+        if !img.is_null() {
+            (self.dispose)(img); // releases the file
+        }
+        hb
+    }
+
     /// Decodes `body` and draws it fitted and centred into the 64x64 bitmap selected in `dc`.
     unsafe fn draw(&self, dc: HDC, body: &[u8], tmp: &Path) -> bool {
         if fs::write(tmp, body).is_err() {
             return false;
         }
-        let mut img = null_mut();
-        let mut hb: HBITMAP = null_mut();
-        if (self.from_file)(crate::w(&tmp.to_string_lossy()).as_ptr(), &mut img) == 0 && !img.is_null() {
-            (self.to_hbitmap)(img, &mut hb, 0xFFFF_FFFF); // alpha composited on white
-        }
-        if !img.is_null() {
-            (self.dispose)(img); // releases the file
-        }
+        let hb = self.hbitmap(tmp);
         let _ = fs::remove_file(tmp);
         if hb.is_null() {
             return false;
@@ -316,6 +352,15 @@ impl Drop for Gdip {
             (self.shutdown)(self.token);
             FreeLibrary(self.lib);
         }
+    }
+}
+
+/// Any GDI+-readable image file as a GDI bitmap (window process only: loads gdiplus.dll, then
+/// unloads it); null on failure. The caller frees it with DeleteObject.
+pub fn decode_file(p: &Path) -> HBITMAP {
+    match Gdip::start() {
+        Some(g) => unsafe { g.hbitmap(p) },
+        None => null_mut(),
     }
 }
 
@@ -376,6 +421,43 @@ mod tests {
         for bad in ["", "localhost", "a..b", ".a.com", "a.com-", "a b.com", "a.com/x", "https://evil.example/a.png", "http://a.mzstatic.com/a.jpg"] {
             assert_eq!(source(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn icons_valid_key_and_tint() {
+        for ok in ["netflix.com", "https://is1-ssl.mzstatic.com/image/x.jpg"] {
+            assert!(valid_key(ok), "{ok}");
+        }
+        for bad in ["", "../x", "a/b.com", "javascript:alert(1)", "localhost", "http://a.mzstatic.com/a.jpg"] {
+            assert!(!valid_key(bad), "{bad}");
+        }
+        let root = std::env::temp_dir().join(format!("subscribity-tint-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let mk = |name: &str, bgr: [u8; 3]| {
+            let bits: Vec<u8> = (0..64 * 64).flat_map(|_| bgr).collect();
+            let p = root.join(name);
+            fs::write(&p, bmp_file(&bits)).unwrap();
+            p
+        };
+        assert_eq!(tint(&mk("red.bmp", [0x20, 0x20, 0xE0])), Some(0xE02020));
+        assert_eq!(tint(&mk("grey.bmp", [0x80, 0x80, 0x80])), None);
+        assert_eq!(tint(&mk("white.bmp", [0xFF, 0xFF, 0xFF])), None);
+        assert_eq!(tint(&mk("black.bmp", [0, 0, 0])), None);
+        // White tile with a 16x16 blue square (256 px): tint is the blue, not diluted by white.
+        let mut bits = vec![0xFFu8; 64 * 64 * 3];
+        for y in 0..16 {
+            for x in 0..16 {
+                let i = (y * 64 + x) * 3;
+                bits[i..i + 3].copy_from_slice(&[0xC0, 0x40, 0x20]);
+            }
+        }
+        let p = root.join("blue.bmp");
+        fs::write(&p, bmp_file(&bits)).unwrap();
+        assert_eq!(tint(&p), Some(0x2040C0));
+        fs::write(&p, b"BM short").unwrap();
+        assert_eq!(tint(&p), None);
+        assert_eq!(tint(&root.join("missing.bmp")), None);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -445,14 +527,14 @@ mod tests {
         let _ = fs::remove_dir_all(root.join(DIR));
         let (art, _) = appstore::lookup("Instagram", "us").expect("network");
         let keys = vec!["github.com".to_string(), art, "nonexistent-zz9q.example".into()];
-        assert_eq!(fetch_missing(&root, &keys), 2);
+        assert_eq!(fetch_missing(&root, &keys, MAX_PER_RUN), 2);
         assert!(path(&root, &keys[0]).exists() && path(&root, &keys[1]).exists());
         assert!(marker(&path(&root, &keys[2])).exists() && !pending(&root, &keys));
         let b = load(&path(&root, &keys[0]));
         assert!(!b.is_null());
         unsafe { DeleteObject(b) };
         let _ = fs::copy(path(&root, &keys[1]), root.join("artwork.bmp"));
-        assert_eq!(fetch_missing(&root, &keys[..1]), 0); // cached; others pruned
+        assert_eq!(fetch_missing(&root, &keys[..1], MAX_PER_RUN), 0); // cached; others pruned
         assert!(!path(&root, &keys[1]).exists());
     }
 }

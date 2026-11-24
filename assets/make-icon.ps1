@@ -24,10 +24,10 @@ function New-IconPng([int]$s) {
     $g.Clear([System.Drawing.Color]::Transparent)
     $k = $s / 256.0
 
-    # Background: rounded square, violet -> indigo gradient.
+    # Background: rounded square, steel blue -> slate gradient.
     $m = [Math]::Max(0.5, 8 * $k)
     $bg = New-RoundRect $m $m ($s - 2 * $m) ($s - 2 * $m) (56 * $k)
-    $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush (New-Object System.Drawing.PointF 0, 0), (New-Object System.Drawing.PointF $s, $s), ([System.Drawing.Color]::FromArgb(255, 139, 92, 246)), ([System.Drawing.Color]::FromArgb(255, 67, 56, 202))
+    $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush (New-Object System.Drawing.PointF 0, 0), (New-Object System.Drawing.PointF $s, $s), ([System.Drawing.Color]::FromArgb(255, 127, 166, 201)), ([System.Drawing.Color]::FromArgb(255, 62, 90, 120))
     $g.FillPath($grad, $bg)
 
     # Renewal ring: a circular arrow around the centre.
@@ -54,7 +54,7 @@ function New-IconPng([int]$s) {
         $fmt = New-Object System.Drawing.StringFormat
         $fmt.Alignment = 'Center'; $fmt.LineAlignment = 'Center'
         $g.TextRenderingHint = 'AntiAliasGridFit'
-        $g.DrawString('$', $font, (New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 79, 70, 229))), (New-Object System.Drawing.RectangleF ($cx - $cr), ($cy - $cr + 2 * $k), (2 * $cr), (2 * $cr)), $fmt)
+        $g.DrawString('$', $font, (New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 62, 90, 120))), (New-Object System.Drawing.RectangleF ($cx - $cr), ($cy - $cr + 2 * $k), (2 * $cr), (2 * $cr)), $fmt)
     } else {
         $cr = 32 * $k
         $g.FillEllipse((New-Object System.Drawing.SolidBrush $white), $cx - $cr, $cy - $cr, 2 * $cr, 2 * $cr)

@@ -1,12 +1,12 @@
 [package]
 name = "subscribity"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 description = "Tiny Windows tray app for tracking subscriptions"
 license = "MIT"
 
 [dependencies]
-wry = { version = "0.47", default-features = false, features = ["os-webview"] }
+wry = { version = "0.47", default-features = false, features = ["os-webview", "protocol"] }
 raw-window-handle = "0.6"
 serde_json = "1"
 

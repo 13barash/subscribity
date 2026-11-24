@@ -246,11 +246,13 @@ pub fn headless() {
     f.regroup(&st.subs, day);
     f.save(&dir);
     let new = f.pending().filter(|c| !before.contains(&c.key)).count() as u32;
+    let ups = f.price_ups(&st.subs, day);
     if ok {
         st.edit_settings(|s| {
             s.scan_last = day;
             s.scan_new += new;
             s.scan_error.clear();
+            s.price_up = ups;
         });
     } else if auth {
         st.edit_settings(|s| s.scan_error = "auth".into());

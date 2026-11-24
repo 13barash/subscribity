@@ -284,6 +284,26 @@ impl ScanFile {
         need.take(max).map(|c| (c.key.clone(), c.name.clone())).collect()
     }
 
+    /// Tracked subscriptions the scanner saw charged more than their saved price (after `mark`):
+    /// same currency, > 1% higher, sub active and not in a free trial. One entry per sub (highest
+    /// price), as (sub id, charged price rounded to cents, currency) for `scan_price_up`.
+    pub fn price_ups(&self, subs: &[Sub], today: i32) -> Vec<(u32, f64, String)> {
+        let mut out: Vec<(u32, f64, String)> = Vec::new();
+        for c in self.c.iter().filter(|c| c.tracked && c.price_changed && c.sub_id > 0) {
+            let Some(s) = subs.iter().find(|s| s.id == c.sub_id) else { continue };
+            if !s.active || s.in_trial(today) || s.cur != c.cur || c.price <= s.price + s.price.abs() * 0.01 {
+                continue;
+            }
+            let p = (c.price * 100.0).round() / 100.0;
+            match out.iter_mut().find(|e| e.0 == s.id) {
+                Some(e) if e.1 < p => e.1 = p,
+                Some(_) => {}
+                None => out.push((s.id, p, c.cur.clone())),
+            }
+        }
+        out
+    }
+
     /// Candidates neither tracked nor skipped.
     pub fn pending(&self) -> impl Iterator<Item = &Candidate> {
         self.c.iter().filter(|c| !c.tracked && !c.skipped)
@@ -349,6 +369,42 @@ mod tests {
         let old = f[..18].to_vec();
         let back = parse_candidate(&old).unwrap();
         assert_eq!((back.first, back.anchor), (d, d));
+    }
+
+    #[test]
+    fn price_ups_only_higher_same_currency_active_subs() {
+        let t = days_from_civil(2026, 11, 24);
+        let sub = |id: u32, name: &str, price: f64, cur: &str| Sub {
+            id, name: name.into(), price, cur: cur.into(), every: 1, unit: 2, start: t - 10, active: true, ..Default::default()
+        };
+        let cand = |name: &str, price: f64, cur: &str| Candidate { key: name.to_lowercase(), name: name.into(), price, cur: cur.into(), ..Default::default() };
+        let mut subs = vec![
+            sub(1, "Netflix", 15.49, "USD"),  // 17.99: up
+            sub(2, "Spotify", 10.0, "USD"),   // 10.10: exactly 1%, no
+            sub(3, "Dropbox", 12.0, "USD"),   // 11.0: lower, no
+            sub(4, "Disney", 8.0, "EUR"),     // charged in USD, no
+            sub(5, "Paused", 5.0, "USD"),     // inactive, no
+            sub(6, "Trialing", 5.0, "USD"),   // in trial, no
+            sub(7, "Medium", 5.0, "USD"),     // same price, no
+        ];
+        subs[4].active = false;
+        subs[5].trial = true;
+        subs[5].start = t + 5;
+        let mut f = ScanFile {
+            c: vec![
+                cand("Netflix", 17.99, "USD"), cand("Netflix", 16.99, "USD"), cand("Spotify", 10.1, "USD"),
+                cand("Dropbox", 11.0, "USD"), cand("Disney", 9.0, "USD"), cand("Paused", 9.0, "USD"),
+                cand("Trialing", 9.0, "USD"), cand("Medium", 5.0, "USD"), cand("Unknown", 50.0, "USD"),
+            ],
+            ..Default::default()
+        };
+        f.mark(&subs);
+        assert_eq!(f.price_ups(&subs, t), vec![(1, 17.99, "USD".to_string())]);
+        // After the trial converts, its increase counts; after the user updates the price, nothing.
+        assert_eq!(f.price_ups(&subs, t + 6).len(), 2);
+        subs[0].price = 17.99;
+        f.mark(&subs);
+        assert!(f.price_ups(&subs, t).is_empty());
     }
 
     #[test]

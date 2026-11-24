@@ -10,6 +10,7 @@
 #![windows_subsystem = "windows"]
 #![allow(non_snake_case, static_mut_refs, clippy::missing_safety_doc)]
 
+mod actions;
 mod data;
 mod icons;
 mod detect;
@@ -21,6 +22,7 @@ mod services;
 mod system;
 mod tls;
 mod update;
+mod wallpaper;
 
 use data::*;
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
@@ -55,11 +57,12 @@ const WM_RATES: u32 = 0x8000 + 2;
 const WM_OPEN: u32 = 0x8000 + 3;
 const WM_IPC: u32 = 0x8000 + 4;
 const WM_RELOAD: u32 = 0x8000 + 5; // window process -> tray: data changed on disk
-const WM_OPENPAGE: u32 = 0x8000 + 7; // tray -> window: 1 settings, 2 add, 1000+id edit
+const WM_OPENPAGE: u32 = 0x8000 + 7; // tray -> window: open codes, see open_window
 const WM_UPDATE: u32 = 0x8000 + 8;
 const WM_INSTALLED: u32 = 0x8000 + 9;
 const WM_SCAN: u32 = 0x8000 + 10; // scan thread -> window: wParam kind, lParam boxed result
-const WM_ICONS: u32 = 0x8000 + 11; // --icons helper -> tray: new icons cached
+const WM_ICONS: u32 = 0x8000 + 11; // --icons helper -> tray and window: new icons cached
+const OPEN_UNUSED: usize = 1_000_000; // open code + id: mark unused, show the savings sheet
 const TIMER_TICK: usize = 1;
 
 const M_OPEN: usize = 1;
@@ -79,6 +82,8 @@ struct App {
     webview: Option<wry::WebView>,
     pending: Vec<String>,
     page_ready: bool,
+    glass: bool,
+    wallpaper: String, // "" or the icon-protocol URL of the pre-blurred wallpaper (see wallpaper.rs)
     store: Store,
     icon: HICON,
     badge: i32,
@@ -147,6 +152,101 @@ pub fn dwm_set(h: HWND, attr: u32, value: u32) {
         if let Some(f) = GetProcAddress(lib, b"DwmSetWindowAttribute\0".as_ptr()) {
             let set: unsafe extern "system" fn(HWND, u32, *const c_void, u32) -> i32 = std::mem::transmute(f);
             set(h, attr, &value as *const u32 as *const c_void, 4);
+        }
+    }
+}
+
+/// Windows build number via ntdll RtlGetVersion (not shimmed by the manifest). 0 if unknown.
+fn os_build() -> u32 {
+    unsafe {
+        let lib = LoadLibraryW(w("ntdll.dll").as_ptr());
+        let Some(f) = GetProcAddress(lib, b"RtlGetVersion\0".as_ptr()) else { return 0 };
+        // OSVERSIONINFOW: size, major, minor, build, platform, szCSDVersion[128]
+        let mut info = [0u32; 5 + 64];
+        info[0] = std::mem::size_of_val(&info) as u32;
+        let get: unsafe extern "system" fn(*mut u32) -> i32 = std::mem::transmute(f);
+        if get(info.as_mut_ptr()) == 0 { info[3] } else { 0 }
+    }
+}
+
+/// Windows 11 22H2+ system backdrop (acrylic) behind the whole window. Returns true if applied.
+fn enable_glass(h: HWND) -> bool {
+    if os_build() < 22621 {
+        return false;
+    }
+    unsafe {
+        let lib = LoadLibraryW(w("dwmapi.dll").as_ptr());
+        let Some(f) = GetProcAddress(lib, b"DwmExtendFrameIntoClientArea\0".as_ptr()) else { return false };
+        let extend: unsafe extern "system" fn(HWND, *const [i32; 4]) -> i32 = std::mem::transmute(f);
+        if extend(h, &[-1; 4]) != 0 {
+            return false;
+        }
+    }
+    dwm_set(h, 35, 0xFFFF_FFFF); // caption color = default, so the backdrop shows in the title bar
+    dwm_set(h, 38, 3); // DWMSBT_TRANSIENTWINDOW (acrylic)
+    true
+}
+
+/// Per-pixel alpha for the window client area without any blur, independent of Windows'
+/// Transparency effects: DwmEnableBlurBehindWindow with an EMPTY blur region (the winit/tao
+/// technique) makes DWM composite the window with its alpha channel and blur nothing.
+fn set_see_through(h: HWND, on: bool) {
+    unsafe {
+        let lib = LoadLibraryW(w("dwmapi.dll").as_ptr());
+        let Some(f) = GetProcAddress(lib, b"DwmEnableBlurBehindWindow\0".as_ptr()) else { return };
+        let enable: unsafe extern "system" fn(HWND, *const [usize; 3]) -> i32 = std::mem::transmute(f);
+        // DWM_BLURBEHIND { u32 dwFlags; BOOL fEnable; HRGN hRgnBlur; BOOL fTransitionOnMaximized }
+        // laid out as 3 words on x64 (flags+enable share the first one).
+        let rgn = CreateRectRgn(0, 0, -1, -1);
+        let bb: [usize; 3] = [(1 | 2) | ((on as usize) << 32), rgn as usize, 0];
+        enable(h, &bb);
+        DeleteObject(rgn);
+    }
+}
+
+/// Keeps per-pixel alpha on the open window: frameless mode needs transparent corners whatever
+/// the see-through setting is (the page paints the background look). No-op under OS acrylic.
+fn apply_see_through() {
+    let a = app();
+    if a.glass || a.win.is_null() {
+        return;
+    }
+    set_see_through(a.win, true);
+    if let Some(wv) = &a.webview {
+        let _ = wv.set_background_color((0, 0, 0, 0));
+    }
+}
+
+/// Frameless window: starts an OS move/resize loop for the page (WebView2 swallows mouse input,
+/// so the parent never sees WM_NCHITTEST over the page). `ht` = HTCAPTION / HTLEFT..HTBOTTOMRIGHT.
+fn nc_drag(ht: u32) {
+    let a = app();
+    if a.win.is_null() {
+        return;
+    }
+    unsafe {
+        if ht != HTCAPTION && IsZoomed(a.win) != 0 {
+            return; // no resizing while maximized
+        }
+        let mut pt = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut pt);
+        windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
+        SendMessageW(a.win, WM_NCLBUTTONDOWN, ht as usize, ((pt.y as u16 as isize) << 16) | pt.x as u16 as isize);
+    }
+}
+
+/// `{cmd:"win", op}` from the page's title-bar buttons.
+fn win_op(op: &str) {
+    let h = app().win;
+    if h.is_null() {
+        return;
+    }
+    unsafe {
+        match op {
+            "min" => { ShowWindow(h, SW_MINIMIZE); }
+            "max" => { ShowWindow(h, if IsZoomed(h) != 0 { SW_RESTORE } else { SW_MAXIMIZE }); }
+            "close" => { PostMessageW(h, WM_CLOSE, 0, 0); }
+            _ => {}
         }
     }
 }
@@ -277,6 +377,7 @@ struct Due {
     key: String,
     text: String,
     trial: bool,
+    unused: bool, // already flagged "not using it anymore"
 }
 
 fn due_list() -> Vec<Due> {
@@ -299,7 +400,7 @@ fn due_list() -> Vec<Due> {
             } else {
                 format!("{} {} – {}", s.name, money(s.price, &s.cur), due_text(left))
             };
-            Some((d, Due { key: format!("{}|{}", s.id, d), text, trial }))
+            Some((d, Due { key: format!("{}|{}", s.id, d), text, trial, unused: s.unused > 0 }))
         })
         .collect();
     v.sort_by_key(|x| x.0);
@@ -330,11 +431,13 @@ fn check_reminders(show_toast: bool) {
                 (n, 0) => format!("{} subscriptions renewing soon", n),
                 (n, _) => format!("{} renewals and trials coming up", n),
             };
-            let mut body: Vec<String> = fresh.iter().take(4).map(|d| d.text.clone()).collect();
-            if fresh.len() > 4 {
-                body.push(format!("+{} more", fresh.len() - 4));
+            let lines: Vec<String> = fresh.iter().map(|d| d.text.clone()).collect();
+            let review = fresh.iter().any(|d| !d.unused);
+            let tail = review.then_some("Not using one? Click to review.");
+            notify(&title, &actions::balloon_body(&lines, 4, tail, actions::BALLOON_MAX));
+            if review {
+                a.notice_page = 4; // the window's reminder-day sheet
             }
-            notify(&title, &body.join("\n"));
         }
     }
     if window_open() {
@@ -377,34 +480,36 @@ fn icon_key(s: &Sub) -> String {
     if !s.icon.is_empty() {
         return s.icon.clone();
     }
-    let u = s.url.trim();
-    let u = u.split_once("://").map_or(u, |x| x.1);
-    let host = u.split(['/', '?', '#']).next().unwrap_or("");
-    let host = host.rsplit('@').next().unwrap_or("").split(':').next().unwrap_or("");
-    if host.contains('.') { services::registrable(host) } else { String::new() }
+    actions::site_key(&s.url)
 }
 
-/// Keys of every subscription, rows shown in the popup first, deduped, non-empty.
+/// Keys of every subscription, rows shown in the popup first, then the quick-add template
+/// sites (the window shows their icons too); deduped, non-empty.
 fn icon_keys(st: &Store) -> Vec<String> {
     let t = today();
     let mut soon: Vec<(i32, String)> = st.subs.iter().filter(|s| s.active).map(|s| (next_due(s, t), icon_key(s))).collect();
     soon.sort_by_key(|x| x.0);
     let mut keys: Vec<String> = soon.into_iter().map(|x| x.1).collect();
     keys.extend(st.subs.iter().map(icon_key));
+    keys.extend(services::SERVICES.iter().filter(|s| s.tpl).map(|s| actions::site_key(s.site)));
     let mut seen = HashSet::new();
     keys.retain(|k| !k.is_empty() && seen.insert(k.clone()));
     keys
 }
 
-/// Popup opened: start the icon helper if something is missing (at most every 10 minutes).
+/// Popup opened (tray, at most every 10 minutes) or window ready / data saved (window, at most
+/// every 30 s): start the icon helper if something is missing. Test copies
+/// (`SUBSCRIBITY_NO_INTEGRATION`) never fetch unless `SUBSCRIBITY_ICONS=1` is set too.
 fn maybe_fetch_icons() {
     static mut LAST: Option<std::time::Instant> = None;
-    if std::env::var_os("SUBSCRIBITY_NO_INTEGRATION").is_some_and(|v| !v.is_empty()) {
+    let env_on = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    if env_on("SUBSCRIBITY_NO_INTEGRATION") && std::env::var("SUBSCRIBITY_ICONS").as_deref() != Ok("1") {
         return;
     }
+    let gap = if app().window_mode { 30 } else { 600 };
     unsafe {
         #[allow(static_mut_refs)]
-        if LAST.is_some_and(|t| t.elapsed().as_secs() < 600) {
+        if LAST.is_some_and(|t| t.elapsed().as_secs() < gap) {
             return;
         }
         if icons::pending(&data_dir(), &icon_keys(&app().store)) {
@@ -414,7 +519,8 @@ fn maybe_fetch_icons() {
     }
 }
 
-/// `--icons`: fetch missing icons, then tell the tray.
+/// `--icons`: fetch missing icons (more per run while the window shows them), then tell the
+/// tray and the window.
 fn icons_helper() {
     unsafe {
         CreateMutexW(null(), 1, w(icons::MUTEX).as_ptr());
@@ -424,11 +530,14 @@ fn icons_helper() {
     }
     let dir = data_dir();
     let store = Store::load(dir.clone());
-    if icons::fetch_missing(&dir, &icon_keys(&store)) > 0 {
+    let max = if window_open() { 40 } else { icons::MAX_PER_RUN };
+    if icons::fetch_missing(&dir, &icon_keys(&store), max) > 0 {
         unsafe {
-            let tray = FindWindowW(w("SubscribityHost").as_ptr(), null());
-            if !tray.is_null() && scan::same_exe(tray) {
-                PostMessageW(tray, WM_ICONS, 0, 0);
+            for class in ["SubscribityHost", "SubscribityWindow"] {
+                let h = FindWindowW(w(class).as_ptr(), null());
+                if !h.is_null() && scan::same_exe(h) {
+                    PostMessageW(h, WM_ICONS, 0, 0);
+                }
             }
         }
     }
@@ -449,9 +558,12 @@ fn popup_data() -> popup::Data {
             let d = next_due(s, t);
             let left = d - t;
             let trial = s.in_trial(t);
-            let when = if trial { format!("Trial ends {}", due_text(left)) } else { format!("{} · {}", fmt_date(d), due_text(left)) };
+            let when = if trial { format!("Trial ends {}", due_text(left)) } else { format!("{} | {}", fmt_date(d), due_text(left)) };
             let tone = if trial { 3 } else if left == 0 { 2 } else if left <= s.remind { 1 } else { 0 };
-            (d, popup::Item { id: s.id, name: s.name.clone(), when, price: money(s.price, &s.cur), tone, icon: icon_key(s) })
+            // Reminder day (trials included): offer "Don't use it anymore" unless already flagged.
+            let unused = s.unused > 0;
+            let flag = !unused && (0..=s.remind.max(0)).contains(&left);
+            (d, popup::Item { id: s.id, name: s.name.clone(), when, price: money(s.price, &s.cur), tone, icon: icon_key(s), flag, unused })
         })
         .filter(|(d, _)| d - t <= 30)
         .collect();
@@ -479,6 +591,7 @@ fn on_popup_action(action: popup::Action) {
         popup::Action::Add => open_window(2),
         popup::Action::Edit(id) => open_window(1000 + id as usize),
         popup::Action::Review => open_window(3),
+        popup::Action::Unused(id) => open_window(OPEN_UNUSED + id as usize), // the window sets the flag
     }
 }
 
@@ -497,17 +610,25 @@ fn maybe_auto_scan() {
 
 fn scan_notice() {
     let a = app();
+    // One balloon per scan, by priority: reconnect (needs action) > price increase > found.
+    // Price alerts count as shown only when they are; else they wait for the next notice.
     let (found, auth) = (a.store.settings.scan_new, a.store.settings.scan_error == "auth");
-    if found > a.scan_new_seen {
+    let reconnect = auth && !a.scan_err_seen;
+    let new_found = found > a.scan_new_seen;
+    let ups = actions::fresh_price_alerts(&mut a.store, !reconnect);
+    if reconnect {
+        notify(APP_NAME, "Email scan stopped: reconnect your email in Subscribity");
+        a.notice_page = 3;
+    } else if !ups.is_empty() {
+        let extra = new_found.then(|| if found == 1 { "+ 1 new subscription found".to_string() } else { format!("+ {} new subscriptions found", found) });
+        notify("Price increase", &actions::balloon_body(&ups, 4, extra.as_deref(), actions::BALLOON_MAX));
+        a.notice_page = 3;
+    } else if new_found {
         let text = if found == 1 { "1 new subscription found in your email".to_string() } else { format!("{} new subscriptions found in your email", found) };
         notify(APP_NAME, &text);
         a.notice_page = 3;
     }
     a.scan_new_seen = found;
-    if auth && !a.scan_err_seen {
-        notify(APP_NAME, "Email scan stopped: reconnect your email in Subscribity");
-        a.notice_page = 3;
-    }
     a.scan_err_seen = auth;
 }
 
@@ -575,7 +696,7 @@ fn rates_status() -> String {
     if a.rates_busy {
         "Updating…".into()
     } else if st.rates_date > 0 && st.rates_base == st.main_cur {
-        format!("Updated {} · refreshed daily", fmt_date(st.rates_date))
+        format!("Updated {} | refreshed daily", fmt_date(st.rates_date))
     } else {
         "Downloaded when you add a subscription in another currency".into()
     }
@@ -617,7 +738,7 @@ fn update_status() -> String {
     } else if update::is_newer(&st.latest_version, VERSION) {
         format!("Version {} is available (you have {})", st.latest_version, VERSION)
     } else if st.update_last > 0 {
-        format!("Version {} is the latest · checked {}", VERSION, fmt_date(st.update_last))
+        format!("Version {} is the latest | checked {}", VERSION, fmt_date(st.update_last))
     } else {
         format!("Version {}", VERSION)
     }
@@ -731,7 +852,8 @@ fn find_window() -> HWND {
     unsafe { FindWindowW(w("SubscribityWindow").as_ptr(), null()) }
 }
 
-/// Tray side: show the window (codes: 0 main, 1 settings, 2 add, 3 scan review, 1000+id edit).
+/// Tray side: show the window. Codes: 0 main, 1 settings, 2 add, 3 scan review, 4 reminder-day
+/// sheet, 1000+id edit, OPEN_UNUSED+id mark unused (checked before 1000+id).
 fn open_window(code: usize) {
     let h = find_window();
     if !h.is_null() {
@@ -749,7 +871,10 @@ fn open_window(code: usize) {
         1 => "--window --settings".to_string(),
         2 => "--window --add".to_string(),
         3 => "--window --found".to_string(),
-        c => format!("--window --edit={}", c - 1000),
+        4 => "--window --remind".to_string(),
+        c if c >= OPEN_UNUSED => format!("--window --unused={}", c - OPEN_UNUSED),
+        c if c >= 1000 => format!("--window --edit={}", c - 1000),
+        _ => "--window".to_string(),
     };
     shell_open(&system::exe().to_string_lossy(), Some(&args));
 }
@@ -759,8 +884,23 @@ fn open_msg(code: usize) -> Option<Value> {
         1 => Some(json!({"type": "open", "page": "settings"})),
         2 => Some(json!({"type": "open", "page": "subs", "add": true})),
         3 => Some(json!({"type": "open", "page": "scan"})),
+        4 => Some(json!({"type": "open", "page": "remind"})),
+        c if c >= OPEN_UNUSED => Some(json!({"type": "open", "page": "unused", "id": c - OPEN_UNUSED})),
         c if c >= 1000 => Some(json!({"type": "open", "page": "subs", "edit": c - 1000})),
         _ => None,
+    }
+}
+
+/// Window side of an open code: "Don't use it anymore" from the tray sets the flag here (the
+/// window owns subscriptions.tsv edits), then the tray reloads.
+fn apply_open_code(code: usize) {
+    let a = app();
+    if code >= OPEN_UNUSED {
+        let id = (code - OPEN_UNUSED) as u32;
+        if actions::set_unused(&mut a.store, id, true, today()) {
+            a.store.save_subs();
+            after_change();
+        }
     }
 }
 
@@ -794,9 +934,29 @@ fn create_window(code: usize) {
         let x = wa.left + (wa.right - wa.left - cw) / 2;
         let y = wa.top + (wa.bottom - wa.top - ch) / 2;
         a.win = CreateWindowExW(0, w("SubscribityWindow").as_ptr(), w(APP_NAME).as_ptr(), WS_OVERLAPPEDWINDOW, x, y, cw, ch, null_mut(), null_mut(), a.hinst, null());
-        dwm_set(a.win, 20, 1); // dark title bar
-        dwm_set(a.win, 35, 0x00271D1B); // caption color = sidebar (Windows 11)
+        // Frameless: WM_NCCALCSIZE drops the OS frame, the page draws title bar and rounded shape.
+        dwm_set(a.win, 20, 1); // dark mode (snap/system menus)
+        // Real acrylic only while Windows' Transparency effects are on; otherwise wallpaper glass.
+        a.glass = wallpaper::transparency_on() && enable_glass(a.win);
+        if a.glass {
+            // Acrylic fills the whole rect (corners too): let DWM round it (8px on Windows 11).
+            dwm_set(a.win, 33, 2); // DWMWCP_ROUND
+        } else {
+            // Per-pixel alpha always, so the page's rounded body shows real transparent corners.
+            set_see_through(a.win, true);
+            dwm_set(a.win, 33, 2); // DWMWCP_ROUND: Windows rounds (anti-aliased); a region cut would be jagged
+            dwm_set(a.win, 34, 0x0037302A); // DWMWA_BORDER_COLOR: subtle slate hairline
+        }
+        // Re-run WM_NCCALCSIZE now that the handler is in place.
+        SetWindowPos(a.win, null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    let glass = a.glass;
+    // Background look priority: OS acrylic > see-through > wallpaper glass > plain (the page paints
+    // the tint). The window itself is always transparent outside the page's rounded body.
+    let see = !glass;
+    let wall: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(if glass { Vec::new() } else { wallpaper::render().unwrap_or_default() });
+    static OPENS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    a.wallpaper = if wall.is_empty() { String::new() } else { format!("http://icon.localhost/__wallpaper?v={}", OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) };
     a.host = a.win;
     a.page_ready = false;
     a.pending.clear();
@@ -809,9 +969,20 @@ fn create_window(code: usize) {
         .map(|p| std::path::PathBuf::from(p).join("Subscribity").join("WebView2"))
         .unwrap_or_else(|_| data_dir().join("webview"));
     let mut ctx = wry::WebContext::new(Some(profile));
+    let icon_dir = data_dir();
     let built = wry::WebViewBuilder::with_web_context(&mut ctx)
         .with_html(UI_HTML)
-        .with_background_color((18, 19, 26, 255))
+        // http://icon.localhost/<host>?v=N → cached site icon (see plans/v0.4.0-a0.md).
+        .with_custom_protocol("icon".into(), move |_, req| {
+            if req.uri().path() == "/__wallpaper" {
+                actions::bmp_response(&wall)
+            } else {
+                actions::icon_response(&icon_dir, req.uri().path())
+            }
+        })
+        .with_transparent(glass || see)
+        .with_initialization_script(if glass { "document.addEventListener(\"DOMContentLoaded\",()=>document.documentElement.classList.add(\"osglass\"))" } else { "" })
+        .with_background_color(if glass || see { (0, 0, 0, 0) } else { (18, 19, 26, 255) })
         .with_theme(wry::Theme::Dark)
         .with_additional_browser_args(BROWSER_ARGS)
         .with_devtools(cfg!(debug_assertions))
@@ -916,6 +1087,12 @@ fn state_json() -> Value {
                 "monthly": monthly(s),
                 "monthlyMain": st.to_main(monthly(s), &s.cur),
                 "priceMain": st.to_main(s.price, &s.cur),
+                "yearly": yearly(s),
+                "yearlyMain": st.to_main(yearly(s), &s.cur),
+                "unused": if s.unused > 0 { iso(s.unused) } else { String::new() },
+                "manage": actions::manage_for(s),
+                "manageOwn": s.manage,
+                "tint": actions::tint_of(&st.dir, &icon_key(s)),
             })
         })
         .collect();
@@ -933,6 +1110,10 @@ fn state_json() -> Value {
     json!({
         "type": "state",
         "version": VERSION,
+        "glass": app().glass,
+        "frameless": true,
+        "maximized": !app().win.is_null() && unsafe { IsZoomed(app().win) } != 0,
+        "wallpaper": app().wallpaper,
         "today": iso(t),
         "subs": subs,
         "payments": payments,
@@ -940,6 +1121,7 @@ fn state_json() -> Value {
         "monthTotal": total,
         "currencies": CURRENCIES,
         "templates": services::templates_json(),
+        "iconsV": actions::icons_v(),
         "paypalColumns": detect::paypal::paypal_column_aliases(),
         "scan": scan::state(),
         "settings": {
@@ -947,11 +1129,14 @@ fn state_json() -> Value {
             "remind": st.settings.default_remind,
             "budget": st.settings.budget,
             "autostart": system::autostart_enabled(),
+            "seeThrough": st.settings.see_through,
             "ratesStatus": rates_status(),
             "updateFreq": st.settings.update_freq,
             "latest": if update::is_newer(&st.settings.latest_version, VERSION) { st.settings.latest_version.as_str() } else { "" },
             "updateStatus": update_status(),
             "updateBusy": a.update_busy,
+            "payMethods": actions::pay_methods(st),
+            "categories": actions::categories(st),
         }
     })
 }
@@ -1006,6 +1191,8 @@ fn sub_from_json(s: &Value, id: u32, default_cur: &str, default_remind: i32) -> 
         icon: Some(str_of(s, "icon")).filter(|u| scan::appstore::is_artwork(u)).unwrap_or_default(),
         // A first charge in the future is no first charge.
         first: parse_iso(&str_of(s, "first")).filter(|&f| f > 0 && f <= today()).unwrap_or(0),
+        unused: 0, // only the `unused` command and the tray's open code set it
+        manage: actions::clean_url(&str_of(s, "manage")),
     })
 }
 
@@ -1022,6 +1209,7 @@ fn handle_ipc(body: &str) {
                 eval(&p);
             }
             after_change(); // lets the tray clear its badge
+            maybe_fetch_icons();
         }
         "save" => {
             let id = msg["sub"].get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
@@ -1031,8 +1219,21 @@ fn handle_ipc(body: &str) {
                 send_js(&json!({"type": "error", "text": "Please check the name, price and date."}));
                 return;
             };
+            let manage_raw = msg["sub"].get("manage").and_then(|x| x.as_str()).map(str::trim);
+            if manage_raw.is_some_and(|m| !m.is_empty()) && sub.manage.is_empty() {
+                send_js(&json!({"type": "error", "text": "Please check the manage / cancel link (a web address like netflix.com/account)."}));
+                return;
+            }
+            // Before storing: a never-edited list is materialized from the current values first.
+            actions::remember_in_lists(&mut a.store, &sub.category, &sub.payment);
             if let Some(i) = existing {
                 let old = &a.store.subs[i];
+                // `unused` is never in the form: editing keeps the flag. A missing `manage` keeps
+                // the override, "" clears it.
+                sub.unused = old.unused;
+                if manage_raw.is_none() {
+                    sub.manage = old.manage.clone();
+                }
                 // The form shows the next payment, not the original billing day. If it wasn't
                 // changed, keep the original day (a bill on the 31st stays on the 31st).
                 if sub.start == next_due(old, a.today) && sub.every == old.every && sub.unit == old.unit {
@@ -1064,6 +1265,7 @@ fn handle_ipc(body: &str) {
             scan::subs_changed();
             after_change();
             maybe_fetch_rates(false);
+            maybe_fetch_icons();
         }
         "delete" => {
             let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
@@ -1089,6 +1291,7 @@ fn handle_ipc(body: &str) {
             scan::subs_changed();
             after_change();
             maybe_fetch_rates(false);
+            maybe_fetch_icons();
         }
         "delete_payment" => {
             let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
@@ -1111,6 +1314,60 @@ fn handle_ipc(body: &str) {
             maybe_fetch_rates(false);
             send_js(&state_json());
             after_change();
+        }
+        "pay_methods" | "categories" => {
+            let list: Vec<String> = msg.get("list").and_then(|x| x.as_array()).map_or(Vec::new(), |v| v.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
+            let list = Some(clean_list(list));
+            if msg["cmd"] == "categories" {
+                a.store.edit_settings(|s| s.categories = list);
+            } else {
+                a.store.edit_settings(|s| s.pay_methods = list);
+            }
+            send_js(&state_json());
+        }
+        "unused" => {
+            let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+            let on = msg.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
+            if actions::set_unused(&mut a.store, id, on, today()) {
+                a.store.save_subs();
+                after_change();
+            }
+            send_js(&state_json());
+        }
+        "open_manage" => {
+            let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+            let url = a.store.subs.iter().find(|s| s.id == id).map(actions::manage_for).unwrap_or_default();
+            // Only web links ever reach ShellExecute (manage_for already cleans user input).
+            if url.starts_with("https://") || url.starts_with("http://") {
+                shell_open(&url, None);
+            } else {
+                send_js(&json!({"type": "error", "text": "No manage link for this subscription."}));
+            }
+        }
+        "titlebar" => {} // title bar height: dragging goes through "drag", nothing to store
+        "drag" => nc_drag(HTCAPTION),
+        "resize" => {
+            let ht = match msg.get("edge").and_then(|e| e.as_str()).unwrap_or("") {
+                "l" => HTLEFT,
+                "r" => HTRIGHT,
+                "t" => HTTOP,
+                "b" => HTBOTTOM,
+                "tl" => HTTOPLEFT,
+                "tr" => HTTOPRIGHT,
+                "bl" => HTBOTTOMLEFT,
+                "br" => HTBOTTOMRIGHT,
+                _ => 0,
+            };
+            if ht != 0 {
+                nc_drag(ht);
+            }
+        }
+        "win" => win_op(msg.get("op").and_then(|o| o.as_str()).unwrap_or("")),
+        "see_through" => {
+            let on = msg.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
+            a.store.edit_settings(|s| s.see_through = on);
+            apply_see_through();
+            send_js(&state_json());
         }
         "autostart" => {
             system::set_autostart(msg.get("on").and_then(|x| x.as_bool()).unwrap_or(false));
@@ -1179,7 +1436,19 @@ unsafe extern "system" fn win_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
                     size: wry::dpi::PhysicalSize::new(cw, ch).into(),
                 });
             }
+            // Tell the page when maximized changes so it drops/restores its corner radius.
+            static WAS_MAX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            let max = wp == SIZE_MAXIMIZED as usize;
+            if wp != SIZE_MINIMIZED as usize && WAS_MAX.swap(max, std::sync::atomic::Ordering::Relaxed) != max && app().page_ready {
+                send_js(&json!({"type": "win", "maximized": max}));
+            }
             0
+        }
+        WM_NCCALCSIZE if wp != 0 => 0, // no OS frame or caption: client = whole window
+        WM_NCHITTEST => {
+            // Only reached on the parent's uncovered pixels; the page handles its own area via IPC.
+            let r = DefWindowProcW(h, msg, wp, lp);
+            if r == HTCLIENT as isize { HTCAPTION as isize } else { r }
         }
         WM_CLOSE => {
             close_window();
@@ -1207,15 +1476,32 @@ unsafe extern "system" fn win_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             0
         }
         WM_OPENPAGE => {
+            if wp >= OPEN_UNUSED {
+                apply_open_code(wp);
+                send_js(&state_json());
+            }
             if let Some(m) = open_msg(wp) {
                 send_js(&m);
             }
+            0
+        }
+        WM_ICONS => {
+            actions::icons_changed(); // new iconsV: fresh <img> URLs, tints read again
+            send_js(&state_json());
             0
         }
         WM_GETMINMAXINFO => {
             let mm = &mut *(lp as *mut MINMAXINFO);
             let sc = app().scale;
             mm.ptMinTrackSize = POINT { x: (560.0 * sc) as i32, y: (420.0 * sc) as i32 };
+            // Frameless maximize = the monitor's work area (keeps the taskbar visible).
+            let mut mi: MONITORINFO = std::mem::zeroed();
+            mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi) != 0 {
+                let (w_, m) = (mi.rcWork, mi.rcMonitor);
+                mm.ptMaxPosition = POINT { x: w_.left - m.left, y: w_.top - m.top };
+                mm.ptMaxSize = POINT { x: w_.right - w_.left, y: w_.bottom - w_.top };
+            }
             0
         }
         _ => DefWindowProcW(h, msg, wp, lp),
@@ -1287,9 +1573,11 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
         WM_RELOAD => {
             let notified = std::mem::take(&mut a.store.notified);
             let ack = std::mem::take(&mut a.store.ack);
+            let price_alerted = std::mem::take(&mut a.store.price_alerted);
             a.store = Store::load(data_dir());
             a.store.notified = notified;
             a.store.ack = ack;
+            a.store.price_alerted = price_alerted;
             housekeeping();
             check_reminders(true);
             maybe_fetch_rates(false);
@@ -1416,6 +1704,8 @@ fn main() {
             webview: None,
             pending: Vec::new(),
             page_ready: false,
+            glass: false,
+            wallpaper: String::new(),
             store,
             icon: null_mut(),
             badge: -1,
@@ -1436,15 +1726,21 @@ fn main() {
 
         if window_mode {
             register("SubscribityWindow", win_proc, hinst, exe_icon);
+            let id_arg = |p: &str| args.iter().find_map(|x| x.strip_prefix(p)).and_then(|id| id.parse::<u32>().ok()).map(|id| id as usize);
             let code = if has("--add") {
                 2
             } else if has("--found") {
                 3
             } else if has("--settings") {
                 1
+            } else if has("--remind") {
+                4
+            } else if let Some(id) = id_arg("--unused=") {
+                OPEN_UNUSED + id
             } else {
-                args.iter().find_map(|x| x.strip_prefix("--edit=")).and_then(|id| id.parse::<usize>().ok()).map_or(0, |id| 1000 + id)
+                id_arg("--edit=").map_or(0, |id| 1000 + id)
             };
+            apply_open_code(code);
             create_window(code);
             run_loop();
             return;
