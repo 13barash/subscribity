@@ -1,8 +1,9 @@
 //! App icons (tray popup + window). A small cache of 128x128 24-bit BMPs (already composited on
 //! white, small sources upscaled with bicubic) in `icons\` beside the data:
-//! `<fnv1a-64 hex of key>-2.bmp` (the `-2` = the 128 px generation; older 64 px `<hash>.bmp`
+//! `<fnv1a-64 hex of key>-3.bmp` (the `-3` = the generation; older `<hash>.bmp` / `-2.bmp`
 //! files are pruned), key = the sub's App Store artwork URL (mzstatic) or else its domain
-//! (apple-touch-icon, else the DuckDuckGo favicon). `<hash>-2.no` marks a failed fetch, retried
+//! (apple-touch-icon, else the Google favicon, else the DuckDuckGo one; the largest wins).
+//! `<hash>-3.no` marks a failed fetch, retried
 //! after 7 days. A cache only: not backed up, unreferenced files pruned.
 //! `fetch_missing` (network + GDI+ decode) runs only in the headless `--icons` helper; gdiplus.dll
 //! is loaded there on demand, never in the tray. The tray only calls `path`, `pending`, `load`
@@ -24,8 +25,11 @@ pub const DIR: &str = "icons";
 pub const MUTEX: &str = "Local\\SubscribityIcons";
 pub const MAX_PER_RUN: usize = 8;
 const SIZE: i32 = 128;
-/// Cache generation suffix of the file stem; 64 px files (no suffix) are pruned.
-const GEN: &str = "-2";
+/// Cache generation suffix of the file stem; files of older generations (no suffix = 64 px, `-2`)
+/// are pruned, so they are refetched once.
+const GEN: &str = "-3";
+/// A source at least this many px wide ends the candidate search; smaller ones are fallbacks.
+const GOOD: u32 = 96;
 const RETRY: Duration = Duration::from_secs(7 * 24 * 3600);
 
 fn fnv1a(s: &str) -> u64 {
@@ -86,7 +90,7 @@ fn upsize(path: &str) -> String {
 
 /// Download sources for `key`, best first (empty for a key we never fetch). A domain: its own
 /// apple-touch-icon (usually 180 px; redirects are not followed, so the apex then `www.`), then
-/// DuckDuckGo's favicon. Artwork: the 256 px rendition, then the URL as stored.
+/// Google's favicon (up to 256 px), then DuckDuckGo's (often 16-48 px). Artwork: the 256 px rendition, then the URL as stored.
 fn candidates(key: &str) -> Vec<(String, String)> {
     let Some(src) = source(key) else { return Vec::new() };
     if appstore::is_artwork(key) {
@@ -102,8 +106,16 @@ fn candidates(key: &str) -> Vec<(String, String)> {
     if !d.starts_with("www.") {
         v.push((format!("www.{d}"), "/apple-touch-icon.png".to_string()));
     }
+    v.push(google(&d));
     v.push(src);
     v
+}
+
+/// Google's favicon cache at its largest native size (up to 256 px). Answers 404 (a 16 px globe
+/// body, which `fetch` drops as non-200) for sites it has no icon of, so no default is ever used.
+/// The `google.com/s2/favicons` URL only redirects here, and redirects are not followed.
+fn google(d: &str) -> (String, String) {
+    ("t1.gstatic.com".into(), format!("/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://{d}&size=256"))
 }
 
 /// Whether to download: no image yet, and no failure marker younger than 7 days.
@@ -165,6 +177,11 @@ pub fn tint(p: &Path) -> Option<u32> {
     Some(((r / n) as u32) << 16 | ((g / n) as u32) << 8 | (bl / n) as u32)
 }
 
+/// Whether an image `w` px wide replaces the best one found so far (strictly larger only).
+fn keeps(best: &Option<(Vec<u8>, u32)>, w: u32) -> bool {
+    best.as_ref().is_none_or(|(_, bw)| w > *bw)
+}
+
 /// Downloads up to `max` missing icons for `keys` (all subs' keys, popup rows first), writes
 /// them to the cache and prunes files no key refers to. Returns how many new images were saved.
 /// Stops at the first network error (offline: nothing is marked, the next run tries again).
@@ -183,25 +200,32 @@ pub fn fetch_missing(dir: &Path, keys: &[String], max: usize) -> u32 {
     let mut saved = 0;
     for k in todo {
         let p = path(dir, k);
-        // Best source first; the first that downloads and decodes wins. Only the last source
-        // answering nothing at all means offline (a hanging own-site just falls through).
+        // Best source first; the first that decodes at GOOD px or more wins, else the largest
+        // decoded one. Only the last source answering nothing at all (and nothing decoded)
+        // means offline (a hanging own-site just falls through).
         let cands = candidates(k);
-        let mut img = None;
+        let mut img: Option<(Vec<u8>, u32)> = None;
         let mut offline = false;
         for (i, (host, url_path)) in cands.iter().enumerate() {
             match appstore::fetch(host, url_path) {
-                Err(0) if i + 1 == cands.len() => offline = true,
+                Err(0) if i + 1 == cands.len() => offline = img.is_none(),
                 Err(_) => {}
-                Ok(body) => img = convert(&body, &mut gdip, &p.with_extension("tmp")),
+                Ok(body) => {
+                    if let Some((bmp, w)) = convert(&body, &mut gdip, &p.with_extension("tmp")) {
+                        if keeps(&img, w) {
+                            img = Some((bmp, w));
+                        }
+                    }
+                }
             }
-            if img.is_some() || offline {
+            if img.as_ref().is_some_and(|(_, w)| *w >= GOOD) || offline {
                 break;
             }
         }
         if offline {
             break;
         }
-        match img {
+        match img.map(|(b, _)| b) {
             Some(bmp) => {
                 let tmp = p.with_extension("tmp");
                 if fs::write(&tmp, bmp).is_ok() && fs::rename(&tmp, &p).is_ok() {
@@ -269,28 +293,28 @@ fn bmp_file(bits: &[u8]) -> Vec<u8> {
 
 /// Decodes `body` (ico, png, jpg, gif, bmp) and draws it fitted into the SIZE bitmap selected in
 /// `dc` with bicubic scaling (small sources are upscaled). `tmp`: scratch file GDI+ reads from.
-unsafe fn draw_body(g: &Gdip, dc: HDC, body: &[u8], tmp: &Path) -> bool {
+unsafe fn draw_body(g: &Gdip, dc: HDC, body: &[u8], tmp: &Path) -> Option<u32> {
     if let Some((w, e)) = ico_entry(body).filter(|(_, e)| !e.starts_with(b"\x89PNG")) {
         // Classic DIB-format icon entry: decode at its own size, scale ourselves.
         let ic = CreateIconFromResourceEx(e.as_ptr(), e.len() as u32, 1, 0x0003_0000, w as i32, w as i32, 0);
         if ic.is_null() {
-            return false;
+            return None;
         }
-        let ok = g.from_hicon(ic).is_some_and(|img| g.draw_fit(dc, &img, SIZE));
+        let ok = g.from_hicon(ic).and_then(|img| g.draw_fit(dc, &img, SIZE));
         DestroyIcon(ic);
         return ok;
     }
     let data = ico_entry(body).map_or(body, |(_, e)| e); // PNG inside an .ico, or a plain image
     if fs::write(tmp, data).is_err() {
-        return false;
+        return None;
     }
-    let ok = g.open(tmp).is_some_and(|img| g.draw_fit(dc, &img, SIZE));
+    let ok = g.open(tmp).and_then(|img| g.draw_fit(dc, &img, SIZE));
     let _ = fs::remove_file(tmp);
     ok
 }
 
-/// Downloaded image → SIZE x SIZE BMP file on white.
-fn convert(body: &[u8], gdip: &mut Option<Option<Gdip>>, tmp: &Path) -> Option<Vec<u8>> {
+/// Downloaded image → (SIZE x SIZE BMP file on white, native px of the source's longer side).
+fn convert(body: &[u8], gdip: &mut Option<Option<Gdip>>, tmp: &Path) -> Option<(Vec<u8>, u32)> {
     unsafe {
         let mut bi: BITMAPINFO = std::mem::zeroed();
         bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -312,9 +336,9 @@ fn convert(body: &[u8], gdip: &mut Option<Option<Gdip>>, tmp: &Path) -> Option<V
         let len = (SIZE * SIZE * 3) as usize;
         std::ptr::write_bytes(bits as *mut u8, 0xFF, len);
         let old = SelectObject(dc, dib);
-        let ok = gdip.get_or_insert_with(Gdip::start).as_ref().is_some_and(|g| draw_body(g, dc, body, tmp));
+        let native = gdip.get_or_insert_with(Gdip::start).as_ref().and_then(|g| draw_body(g, dc, body, tmp));
         GdiFlush();
-        let out = ok.then(|| bmp_file(std::slice::from_raw_parts(bits as *const u8, len)));
+        let out = native.map(|w| (bmp_file(std::slice::from_raw_parts(bits as *const u8, len)), w));
         SelectObject(dc, old);
         DeleteObject(dib);
         DeleteDC(dc);
@@ -411,9 +435,9 @@ mod tests {
         assert_eq!(fnv1a(""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a("a"), 0xaf63_dc4c_8601_ec8c);
         let p = path(Path::new("D:\\data"), "a");
-        assert_eq!(p, Path::new("D:\\data\\icons\\af63dc4c8601ec8c-2.bmp"));
-        assert_eq!(marker(&p), Path::new("D:\\data\\icons\\af63dc4c8601ec8c-2.no"));
-        assert_eq!(p.with_extension("tmp"), Path::new("D:\\data\\icons\\af63dc4c8601ec8c-2.tmp"));
+        assert_eq!(p, Path::new("D:\\data\\icons\\af63dc4c8601ec8c-3.bmp"));
+        assert_eq!(marker(&p), Path::new("D:\\data\\icons\\af63dc4c8601ec8c-3.no"));
+        assert_eq!(p.with_extension("tmp"), Path::new("D:\\data\\icons\\af63dc4c8601ec8c-3.tmp"));
         assert_ne!(path(Path::new("x"), "netflix.com"), path(Path::new("x"), "Netflix.com"));
         assert_eq!(source("netflix.com"), Some(("icons.duckduckgo.com".into(), "/ip3/netflix.com.ico".into())));
         let art = "https://is1-ssl.mzstatic.com/image/thumb/x/100x100bb.jpg";
@@ -442,11 +466,22 @@ mod tests {
         assert_eq!(candidates("https://is1-ssl.mzstatic.com/a/256x256bb.jpg").len(), 1);
         let d = candidates("Netflix.com");
         let hosts: Vec<&str> = d.iter().map(|c| c.0.as_str()).collect();
-        assert_eq!(hosts, ["netflix.com", "www.netflix.com", "icons.duckduckgo.com"]);
+        assert_eq!(hosts, ["netflix.com", "www.netflix.com", "t1.gstatic.com", "icons.duckduckgo.com"]);
         assert_eq!(d[0].1, "/apple-touch-icon.png");
-        assert_eq!(d[2].1, "/ip3/netflix.com.ico");
-        assert_eq!(candidates("www.a.com").len(), 2);
+        assert!(d[2].1.starts_with("/faviconV2?") && d[2].1.ends_with("&url=https://netflix.com&size=256"));
+        assert_eq!(d[3].1, "/ip3/netflix.com.ico");
+        assert_eq!(candidates("www.a.com").len(), 3);
         assert!(candidates("localhost").is_empty());
+    }
+
+    #[test]
+    fn icons_small_source_is_only_a_fallback() {
+        let b = |w| Some((vec![0u8], w));
+        assert!(keeps(&None, 16)); // anything beats nothing (a 404 globe never gets here: non-200)
+        assert!(keeps(&b(32), 48));
+        assert!(!keeps(&b(48), 48)); // ties keep the earlier (better-ranked) source
+        assert!(!keeps(&b(180), 64));
+        assert!(GOOD > 64 && GOOD <= SIZE as u32); // 64 px Google/DDG icons do not stop the search
     }
 
     #[test]

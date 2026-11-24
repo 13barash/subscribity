@@ -42,18 +42,6 @@ html.wallglass { --surface: rgba(255,255,255,.05); --glass-bg: rgba(14,17,22,.35
 html.wallglass body::before { background: linear-gradient(rgba(14,17,22,.72), rgba(14,17,22,.72)), var(--wall) center / cover no-repeat; }
 html.wallglass nav.glass, html.wallglass .banner.glass, html.wallglass .fbar.glass { backdrop-filter: none; -webkit-backdrop-filter: none; }
 html.wallglass .modal.glass { background: rgba(14,17,22,.78); }
-/* seethrough: Rust made the window truly transparent (no blur, works with Transparency effects off).
-   Smoked glass: window smoke a .78 top to .84 bottom, frosted slabs (#161B22 at .62 plus static grain) on top.
-   Worst case (pure white behind, sheen included): muted #9AA4B2 on a card 4.88:1, on the sidebar 4.62:1. */
-html.seethrough { --win-bg: linear-gradient(180deg, rgba(20,25,32,.78), rgba(14,17,22,.84)); background: var(--win-bg);
-  --surface: rgba(22,27,34,.62); --glass-bg: rgba(22,27,34,.55);
-  --sh-1: inset 0 1px 0 rgba(255,255,255,.10), 0 1px 2px rgba(0,0,0,.22), 0 8px 24px rgba(0,0,0,.22);
-  --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .9 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='.035'/></svg>"); }
-html.seethrough body::before { background: linear-gradient(115deg, transparent 0%, rgba(255,255,255,.04) 42%, transparent 68%); }
-html.seethrough nav.glass, html.seethrough .banner.glass, html.seethrough .fbar.glass { backdrop-filter: none; -webkit-backdrop-filter: none; }
-html.seethrough .modal.glass { background: rgba(14,17,22,.92); }
-html.seethrough :is(.card, .panel, .hero, .nu, .row, .cal, .cand, .ptile, .empty, nav.glass, .modal.glass) { background-image: var(--grain); }
-html.seethrough .row { box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
 /* frameless: Rust removed the OS frame; the page draws the rounded window, its hairline and the title bar. */
 html.osglass { --win-bg: rgba(14,17,22,.62); }
 html.frameless { background: transparent; }
@@ -270,7 +258,6 @@ select option { background: var(--surface-solid); }
 .avatar.md { width: 44px; height: 44px; font-size: 18px; }
 .avatar.lg { width: 56px; height: 56px; border-radius: var(--r-md); font-size: 22px; }
 .tile { position: relative; width: 26px; height: 26px; flex: none; border: 2px solid var(--ring-c, var(--line)); border-radius: var(--r-xs); background: color-mix(in srgb, var(--ring-c, var(--surface-solid)) 62%, var(--bg)); color: var(--text); overflow: hidden; cursor: pointer; font-weight: 700; font-size: 12px; line-height: 22px; text-align: center; }
-.evs.one .tile { width: 32px; height: 32px; font-size: 15px; line-height: 28px; }
 .tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--text); border-radius: var(--s1); opacity: 0; transition: opacity var(--d-mid); }
 .tile.trial { border-style: dashed; }
 .tile.more { background: var(--surface-2); border-color: var(--line-strong); font-size: 11px; }
@@ -280,21 +267,34 @@ select option { background: var(--surface-solid); }
 .calhead h1 { flex: 1; min-width: 160px; }
 .chip-total { display: inline-flex; align-items: center; min-height: 32px; padding: 0 var(--s3); border-radius: var(--r-pill); background: var(--accent-soft); color: var(--text); font: var(--t-small); font-weight: 600; }
 .navgrp { display: inline-flex; gap: var(--s1); padding: var(--s1); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); }
-.cal { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-1); overflow: hidden; }
-.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+#page-calendar { max-width: 1360px; }
+#page-calendar.active { display: flex; flex-direction: column; min-height: 100%; }
+.cal { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-1); overflow: hidden; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: minmax(92px, 1fr); flex: 1; }
 .cal-grid.slL { animation: slL var(--d-mid) var(--ease-out) backwards; } .cal-grid.slR { animation: slR var(--d-mid) var(--ease-out) backwards; }
-.day { min-height: 92px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: var(--s2); font-size: 12px; min-width: 0; position: relative; }
+/* Each day is a size container: its icons scale with the cell (cqmin) and with how many payments it holds. */
+.day {border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: var(--s3); font-size: 12px; min-width: 0; position: relative; overflow: hidden; display: flex; flex-direction: column; container-type: size; }
+.day .dh { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s1); flex: none; }
 .day:nth-child(7n) { border-right: 0; }
 .day.out { background: var(--surface); opacity: .5; }
 .day.has { cursor: pointer; } .day.has:hover { background: var(--surface-2); }
 .day.now::after { content: ""; position: absolute; inset: var(--s1); border-radius: var(--r-sm); box-shadow: inset 0 0 0 2px var(--accent); pointer-events: none; }
-.day .n { font-weight: 700; display: inline-block; margin-bottom: var(--s1); }
+.day .n { font-weight: 700; }
 .day.now .n { color: var(--accent); }
-.day .wd { float: right; font: var(--t-micro); text-transform: none; letter-spacing: 0; color: var(--muted); }
+.day .wd { font: var(--t-micro); text-transform: none; letter-spacing: 0; color: var(--muted); }
 .day .wd.we { color: var(--muted); }
-.evs { display: flex; flex-wrap: wrap; gap: var(--s1); min-width: 0; }
-.evs.one { flex-direction: column; flex-wrap: nowrap; }
-.evn { font-size: 11px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; cursor: pointer; }
+/* Payments fill the rest of the cell, centred. One: big icon + name under it. Two: side by side.
+   Three or more: two per row. --ts is the icon size, clamped so it never gets tiny or huge. */
+.evs { --ts: clamp(22px, 24cqmin, 40px); flex: 1; min-height: 0; min-width: 0; display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: var(--s2); padding-top: var(--s1); max-width: calc(2 * var(--ts) + var(--s2)); margin-inline: auto; }
+.evs.two { --ts: clamp(26px, 30cqmin, 48px); max-width: none; flex-wrap: nowrap; }
+.evs.one { --ts: clamp(30px, 40cqmin, 64px); max-width: 100%; width: 100%; flex-direction: column; flex-wrap: nowrap; align-items: center; justify-content: center; }
+.evs .tile { width: var(--ts); height: var(--ts); line-height: calc(var(--ts) - 4px); font-size: calc(var(--ts) * .45); border-radius: calc(var(--ts) * .24); }
+.evs .tile.more { font-size: calc(var(--ts) * .36); }
+@container (max-height: 78px) { .evs.one .evn { display: none; } }
+.chip-total .ccur { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+.chip-total .cplus, .chip-total .ceq { color: var(--faint); margin: 0 .4em; font-weight: 400; }
+.chip-total .ctot { font-variant-numeric: tabular-nums; }
+.evn { font-size: clamp(11px, 10cqmin, 13px); font-weight: 600; line-height: 1.25; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; cursor: pointer; }
 .calpop { position: fixed; z-index: 60; background: var(--surface-solid); border: 1px solid var(--line-strong); border-radius: var(--r-md); box-shadow: var(--sh-2); padding: var(--s2); min-width: 200px; max-width: min(300px, calc(100vw - 16px)); max-height: 60vh; overflow: auto; animation: min var(--d-fast) var(--ease-out) backwards; }
 .it { display: flex; align-items: center; gap: var(--s3); padding: var(--s2); min-height: 40px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px; width: 100%; border: 0; background: none; text-align: left; }
 .it:hover { background: var(--surface-2); }
@@ -304,6 +304,7 @@ select option { background: var(--surface-solid); }
 
 /* stats / history */
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); margin-bottom: var(--s3); align-items: start; }
+.grid2 > :only-child, .grid2 > :first-child:nth-last-child(2):has(+ [hidden]) { grid-column: 1 / -1; }
 .bar { display: grid; grid-template-columns: minmax(80px, 120px) 1fr auto; gap: var(--s3); align-items: center; margin-bottom: var(--s3); font-size: 13px; }
 .bar .track { height: 10px; background: var(--surface-2); border-radius: var(--r-pill); overflow: hidden; }
 .bar .fill { height: 100%; width: 100%; transform-origin: left; border-radius: var(--r-pill); background: var(--accent); }
@@ -341,11 +342,15 @@ details.more > .inner { margin-top: var(--s3); }
 /* settings */
 .set { display: flex; justify-content: space-between; align-items: center; gap: var(--s4); padding: var(--s4) 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .set:last-child { border: 0; padding-bottom: 0; }
+.set:first-child { padding-top: 0; }
 .set .t { font-weight: 600; }
 .set .r { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .set > div:first-child { flex: 1; min-width: 200px; }
 .panel + .panel { margin-top: var(--s3); }
-.ctitle { font: var(--t-h2); margin-bottom: var(--s2); }
+.ctitle { font: var(--t-h2); margin-bottom: var(--s2); display: flex; align-items: center; gap: var(--s2); }
+.ctitle svg { color: var(--accent); }
+.btn .chev { width: 16px; height: 16px; transition: transform var(--d-fast); }
+.btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
 .lists { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s5); }
 .lm .sub { margin: var(--s1) 0 var(--s3); }
 .lm .add { display: flex; gap: var(--s2); margin-top: var(--s3); }
@@ -356,9 +361,10 @@ details.more > .inner { margin-top: var(--s3); }
 .paylist .chip .n { color: var(--muted); font-weight: 500; }
 .paylist .chip button { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; width: 28px; height: 28px; border-radius: var(--r-pill); }
 .paylist .chip button:hover { background: var(--line-strong); color: var(--text); }
-.backups { margin-top: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
-.backups div { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); }
-.danger-zone { border-color: color-mix(in srgb, var(--bad) 45%, transparent); margin-top: var(--s5) !important; }
+.backups { flex: 1 0 100%; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-md); max-height: 280px; overflow-y: auto; }
+.backups div { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); min-height: 48px; padding: 0 var(--s3) 0 var(--s4); font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.backups div:last-child { border-bottom: 0; }
+.backups .btn { min-height: 36px; }
 
 /* modal */
 .scrim { position: fixed; inset: 0; background: rgba(8,10,14,.5); display: none; align-items: center; justify-content: center; z-index: 10; backdrop-filter: blur(calc(var(--blur) * .5)) saturate(140%); -webkit-backdrop-filter: blur(calc(var(--blur) * .5)) saturate(140%); padding: var(--s3); }
@@ -367,7 +373,12 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
 .scrim.open .modal { animation: min var(--d-mid) var(--ease-out) backwards; }
 .scrim.closing { animation: fout var(--d-fast) var(--ease-in) forwards; }
 .scrim.closing .modal { animation: mout var(--d-fast) var(--ease-in) forwards; }
-#ask { z-index: 30; } #sheet { z-index: 20; }
+#ask { z-index: 30; } #sheet { z-index: 20; } #busy { z-index: 40; }
+.modal.busy { display: flex; align-items: center; gap: var(--s4); }
+.spin { flex: none; width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--line-strong); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#ask .modal:has(#ask-alt:not([hidden])) { width: min(600px, 100%); }
+.set .path { overflow-wrap: anywhere;font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; margin-top: var(--s1); }
 .modal { border: 1px solid var(--line-strong); border-radius: var(--r-xl); width: min(600px, 100%); max-height: 100%; overflow-y: auto; overscroll-behavior: contain; box-shadow: var(--sh-2); padding: var(--s5); }
 .modal.narrow { width: min(440px, 100%); }
 .mhead { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s4); }
@@ -457,14 +468,36 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
   .cand { grid-template-columns: 44px 1fr; } .cand .price { grid-column: 2; text-align: left; } .cand .acts { grid-column: 1 / -1; justify-content: flex-start; }
   .hero { padding: var(--s5); } .hero-n { font-size: 36px; line-height: 40px; }
   .pgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .day { min-height: 76px; padding: var(--s1); }
+  .cal-grid { grid-auto-rows: minmax(76px, 1fr); }
+  .day { padding: var(--s2); } .day.now::after { inset: 2px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs><linearGradient id="lgG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7FA6C9"/><stop offset="1" stop-color="#3E5A78"/></linearGradient>
-<symbol id="logo-sym" viewBox="0 0 256 256"><rect x="8" y="8" width="240" height="240" rx="56" fill="url(#lgG)" stroke="none"/><path d="M167 60.45A78 78 0 1 1 89 60.45" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="butt"/><polygon points="132.4,40.45 182,34.47 152,86.43" fill="#fff" stroke="none"/><circle cx="128" cy="128" r="40" fill="#fff" stroke="none"/><text x="128" y="130" text-anchor="middle" dominant-baseline="central" font-family="Segoe UI, sans-serif" font-weight="700" font-size="52" fill="#3E5A78" stroke="none">$</text></symbol></defs></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs><linearGradient id="lgG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5CA8F0"/><stop offset="1" stop-color="#2563C4"/></linearGradient>
+<symbol id="logo-sym" viewBox="0 0 256 256"><rect x="8" y="8" width="240" height="240" rx="56" fill="url(#lgG)" stroke="none"/><path d="M167 60.45A78 78 0 1 1 89 60.45" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="butt"/><polygon points="132.4,40.45 182,34.47 152,86.43" fill="#fff" stroke="none"/><circle cx="128" cy="128" r="40" fill="#fff" stroke="none"/><!-- "$": S centerline is point-symmetric about (128,128) (each point (x,y) has a mirror (256-x,256-y)), so its bbox x 117..139, y 108..148 is centered exactly; bar x=128, y 101..155 (center 128). Stroke 7 round caps on S, butt on bar. --><path d="M139 116C139 110 134 108 128 108C121 108 117 112 117 118C117 124 122 126 128 128C134 130 139 132 139 138C139 144 135 148 128 148C122 148 117 146 117 140" fill="none" stroke="#2563C4" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><path d="M128 101V155" fill="none" stroke="#2563C4" stroke-width="5"/></symbol>
+<!-- UI icons: 24x24 grid, stroke style inherited from the using svg (see "svg" rule) -->
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+<symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4 10 14M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+<symbol id="i-undo" viewBox="0 0 24 24"><path d="M4 9h11a5 5 0 0 1 0 10H8M8 5 4 9l4 4"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></symbol>
+<symbol id="i-cup" viewBox="0 0 24 24"><path d="M4 9h12v5a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5zM16 10h1.5a2.5 2.5 0 0 1 0 5H16M7 3v2M11 3v2"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
+<symbol id="i-skip" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol></defs></svg>
 <div class="titlebar" id="titlebar"><div class="tt"><svg class="logo" viewBox="0 0 256 256" aria-hidden="true"><use href="#logo-sym"/></svg><span>Subscribity</span></div>
   <div class="wc"><button type="button" data-win="min" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button><button type="button" data-win="max" aria-label="Maximize or restore" title="Maximize"><svg class="i-max" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.5"/></svg><svg class="i-res" viewBox="0 0 12 12"><rect x="2" y="3.8" width="6.2" height="6.2" rx="1.2"/><path d="M4 3.8V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-.8"/></svg></button><button type="button" class="x" data-win="close" aria-label="Close" title="Close"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button></div></div>
 <i class="rz l" data-rz="l"></i><i class="rz r" data-rz="r"></i><i class="rz t" data-rz="t"></i><i class="rz b" data-rz="b"></i><i class="rz tl" data-rz="tl"></i><i class="rz tr" data-rz="tr"></i><i class="rz bl" data-rz="bl"></i><i class="rz br" data-rz="br"></i>
@@ -475,9 +508,9 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
   <button data-page="stats" title="Statistics"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>Statistics</span></button>
   <button data-page="scan" title="Find subscriptions"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8 11h6M11 8v6"/></svg><span>Find subscriptions</span><b class="badge" id="nav-badge" hidden></b></button>
   <button data-page="history" title="History"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg><span>History</span></button>
-  <button data-page="settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg><span>Settings</span></button>
+  <button data-page="settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"/></svg><span>Settings</span></button>
   <div class="spacer"></div>
-  <div class="navcoffee" role="button" tabindex="0" title="Buy me a coffee" onclick="send({cmd:'open_support'})" onkeydown="if(event.key==='Enter')this.click()">☕<span>Buy me a coffee</span></div>
+  <div class="navcoffee" role="button" tabindex="0" title="Buy me a coffee" onclick="send({cmd:'open_support'})" onkeydown="if(event.key==='Enter')this.click()"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-cup"/></svg><span>Buy me a coffee</span></div>
   <div class="foot" id="foot"></div>
 </nav>
 
@@ -573,7 +606,7 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
       </div>
       <div class="err" id="sc-err"></div>
       <div class="btnrow" style="margin-top:var(--s2)">
-        <button class="btn primary lg" id="sc-connect-btn">Connect</button>
+        <button class="btn primary lg" id="sc-connect-btn"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plug"/></svg>Connect</button>
         <button class="btn danger" id="sc-disc2" hidden>Disconnect</button>
         <span class="sub" id="sc-wait" hidden>This can take up to 40 seconds.</span>
       </div>
@@ -614,7 +647,7 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
   <section class="page" id="page-settings">
     <div class="head"><div><h1>Settings</h1></div></div>
     <div class="panel">
-      <div class="ctitle">General</div>
+      <div class="ctitle"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sliders"/></svg>General</div>
       <div class="set"><div><div class="t">Main currency</div><div class="sub">Totals and statistics use this currency.</div></div>
         <div class="field"><select id="s-cur" aria-label="Main currency" onchange="saveSettings()"></select></div></div>
       <div class="set"><div><div class="t">Monthly budget</div><div class="sub">You get a notification when subscriptions cost more. Leave empty for no budget.</div></div>
@@ -623,54 +656,56 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
         <div class="field"><input id="s-remind" type="number" min="0" max="365" aria-label="Default reminder days" style="width:72px" onchange="saveSettings()"></div></div>
       <div class="set"><div><div class="t">Start with Windows</div><div class="sub">Runs in the tray and reminds you about renewals.</div></div>
         <label class="switch"><input type="checkbox" id="s-auto" aria-label="Start with Windows" onchange="send({cmd:'autostart', on:this.checked})"><span></span></label></div>
-      <div class="set"><div><div class="t">See-through window</div><div class="sub">Shows what's behind the window, without blur. Text may be harder to read over busy windows.</div></div>
-        <label class="switch"><input type="checkbox" id="s-see" aria-label="See-through window" onchange="send({cmd:'see_through', on:this.checked})"><span></span></label></div>
     </div>
 
     <div class="panel">
-      <div class="ctitle">Lists</div>
+      <div class="ctitle"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-list"/></svg>Lists</div>
       <div class="lists">
         <div class="lm"><div class="t" style="font-weight:600">Categories</div><div class="sub">Suggested when you add a subscription. Removing one doesn't change subscriptions that use it.</div>
           <div class="paylist" id="s-cats"></div>
-          <div class="add"><div class="field"><input id="s-cat-new" maxlength="40" placeholder="Streaming" aria-label="New category" onkeydown="if(event.key==='Enter')addToList('cat')"></div><button class="btn" onclick="addToList('cat')">Add</button></div></div>
+          <div class="add"><div class="field"><input id="s-cat-new" maxlength="40" placeholder="Streaming" aria-label="New category" onkeydown="if(event.key==='Enter')addToList('cat')"></div><button class="btn" onclick="addToList('cat')"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus"/></svg>Add</button></div></div>
         <div class="lm"><div class="t" style="font-weight:600">Payment methods</div><div class="sub">Cards and accounts you pick from. Removing one doesn't change subscriptions that use it.</div>
           <div class="paylist" id="s-pays"></div>
-          <div class="add"><div class="field"><input id="s-pay-new" maxlength="40" placeholder="Visa •• 4242" aria-label="New payment method" onkeydown="if(event.key==='Enter')addToList('pay')"></div><button class="btn" onclick="addToList('pay')">Add</button></div></div>
+          <div class="add"><div class="field"><input id="s-pay-new" maxlength="40" placeholder="Visa •• 4242" aria-label="New payment method" onkeydown="if(event.key==='Enter')addToList('pay')"></div><button class="btn" onclick="addToList('pay')"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus"/></svg>Add</button></div></div>
       </div>
     </div>
 
     <div class="panel">
-      <div class="ctitle">Data</div>
+      <div class="ctitle"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-db"/></svg>Data</div>
+      <div class="set"><div><div class="t">Data folder</div><div class="sub path" id="s-dd-path"></div><div class="sub" id="s-dd-note" hidden>Your subscriptions, payment history and backups are stored here.</div></div>
+        <div class="r"><button class="btn" id="s-dd-open" onclick="send({cmd:'open_folder'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-folder"/></svg>Open folder</button>
+          <button class="btn" id="s-dd-change" onclick="send({cmd:'data_dir_pick'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-edit"/></svg>Change…</button>
+          <button class="btn" id="s-dd-default" hidden onclick="send({cmd:'data_dir_default'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-undo"/></svg>Use default folder</button></div></div>
       <div class="set"><div><div class="t">Find subscriptions in my email</div><div class="sub" id="s-scan-sub"></div></div>
-        <button class="btn" onclick="go('scan')">Open</button></div>
+        <button class="btn" onclick="go('scan')"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-open"/></svg>Open</button></div>
       <div class="set"><div><div class="t">Exchange rates</div><div class="sub" id="s-rates"></div></div>
-        <button class="btn" onclick="send({cmd:'rates'})">Update now</button></div>
+        <button class="btn" onclick="send({cmd:'rates'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Update now</button></div>
       <div class="set"><div><div class="t">Import and export</div><div class="sub">Import a CSV or JSON file, for example a Subscribity or Wallos export.</div></div>
-        <div class="r"><button class="btn" onclick="$('file').click()">Choose file…</button><button class="btn" onclick="send({cmd:'export'})">Export CSV</button></div></div>
-      <div class="set" style="align-items:flex-start"><div style="flex:1"><div class="t">Backups</div><div class="sub">A copy of your data is saved every week and kept for 30 days.</div>
-          <div class="backups" id="s-backups"></div></div>
-        <button class="btn" onclick="send({cmd:'open_folder'})">Open folder</button></div>
+        <div class="r"><button class="btn" onclick="$('file').click()"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-upload"/></svg>Choose file…</button><button class="btn" onclick="send({cmd:'export'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-download"/></svg>Export CSV</button></div></div>
+      <div class="set"><div><div class="t">Backups</div><div class="sub" id="s-bk-sub">A copy of your data is saved every week and kept for 30 days.</div></div>
+        <div class="r"><button class="btn" id="s-bk-toggle" aria-expanded="false" aria-controls="s-backups"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-undo"/></svg>Restore…<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chev"/></svg></button></div>
+        <div class="backups" id="s-backups" hidden></div></div>
     </div>
 
     <div class="panel">
-      <div class="ctitle">Updates</div>
+      <div class="ctitle"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Updates</div>
       <div class="set"><div><div class="t">Check for updates</div><div class="sub" id="s-update"></div></div>
         <div class="r">
           <div class="seg" id="s-freq"><button data-v="weekly">Weekly</button><button data-v="monthly">Monthly</button><button data-v="off">Off</button></div>
-          <button class="btn" id="s-check" onclick="send({cmd:'update_check'})">Check now</button>
+          <button class="btn" id="s-check" onclick="send({cmd:'update_check'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Check now</button>
           <button class="btn primary" id="s-install" onclick="installUpdate()">Install</button>
         </div></div>
     </div>
 
     <div class="panel">
-      <div class="ctitle">About</div>
+      <div class="ctitle"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-info"/></svg>About</div>
       <div class="set"><div style="display:flex;align-items:center;gap:var(--s4)"><svg class="logo lg" viewBox="0 0 256 256" aria-hidden="true"><use href="#logo-sym"/></svg><div><div class="t">Subscribity <span id="s-ver" class="sub"></span></div><div class="sub">Subscribity is free. If it saves you money, you can buy me a coffee.</div></div></div>
-        <button class="btn coffee" onclick="send({cmd:'open_support'})">☕ Buy me a coffee</button></div>
+        <button class="btn coffee" onclick="send({cmd:'open_support'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-cup"/></svg>Buy me a coffee</button></div>
     </div>
 
     <div class="panel danger-zone">
       <div class="set"><div><div class="t">Uninstall</div><div class="sub">Removes the app, its Start menu shortcut and autostart. You choose whether to keep your data.</div></div>
-        <button class="btn danger" onclick="send({cmd:'uninstall'})">Uninstall…</button></div>
+        <button class="btn danger" onclick="send({cmd:'uninstall'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash"/></svg>Uninstall…</button></div>
     </div>
   </section>
 </main>
@@ -735,8 +770,11 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
 </div>
 
 <div class="scrim" id="ask" onmousedown="if(event.target===this)answer(false)">
-  <div class="modal narrow glass" role="alertdialog" aria-modal="true" aria-labelledby="ask-t"><h2 id="ask-t" style="font:var(--t-h2);margin-bottom:var(--s3)"></h2><div class="sub" id="ask-b" style="font:var(--t-body)"></div>
-    <div class="actions"><div class="spacer"></div><button class="btn" onclick="answer(false)">Cancel</button><button class="btn primary" id="ask-ok" onclick="answer(true)">OK</button></div></div>
+  <div class="modal narrow glass" role="alertdialog" aria-modal="true" aria-labelledby="ask-t"><h2 id="ask-t" style="font:var(--t-h2);margin-bottom:var(--s3)"></h2><div class="sub" id="ask-b" style="font:var(--t-body);white-space:pre-line;overflow-wrap:anywhere"></div>
+    <div class="actions"><div class="spacer"></div><button class="btn" onclick="answer(false)">Cancel</button><button class="btn" id="ask-alt" hidden onclick="answer('alt')"></button><button class="btn primary" id="ask-ok" onclick="answer(true)">OK</button></div></div>
+</div>
+<div class="scrim" id="busy">
+  <div class="modal narrow glass busy" role="alertdialog" aria-modal="true" aria-labelledby="busy-t" aria-live="assertive" tabindex="-1"><span class="spin" aria-hidden="true"></span><div><h2 id="busy-t" style="font:var(--t-h2)">Moving your data…</h2><div class="sub">Please wait. This can take a moment.</div></div></div>
 </div>
 <datalist id="dl-cat"></datalist><datalist id="dl-pay"></datalist>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -756,7 +794,8 @@ const UNIT = ["days","weeks","months","years"];
 const RM = matchMedia("(prefers-reduced-motion: reduce)");
 // html.noblur stays an internal kill switch only: this app keeps its own glass even when Windows' Transparency effects are off.
 const reduced = () => RM.matches;
-const SVG_CHECK = `<svg viewBox="0 0 24 24" class="ck"><path d="M5 12l5 5L20 7"/></svg>`;
+const ic = n => `<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+const SVG_CHECK =`<svg viewBox="0 0 24 24" class="ck"><path d="M5 12l5 5L20 7"/></svg>`;
 const SVG_FLAG = `<svg viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>`;
 
 // Popular services for quick add come from Rust (state.templates): [name, website, category, unit?] (unit 3 = yearly).
@@ -772,6 +811,13 @@ function moneyShort(v) {
   catch { return Math.round(v) + " " + S.settings.main; }
 }
 const mainMoney = v => money(v, S.settings.main);
+// Compact amount for tight spots: no ".00" on whole amounts.
+function moneyFit(v, cur) {
+  if (v == null || isNaN(v)) return "–";
+  const whole = Math.abs(v - Math.round(v)) < 0.005;
+  try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur, minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: whole ? 0 : 2 }).format(v); }
+  catch { return (whole ? Math.round(v) : v.toFixed(2)) + " " + cur; }
+}
 const cycle = s => s.every === 1 ? ["Daily","Weekly","Monthly","Yearly"][s.unit] : `Every ${s.every} ${UNIT[s.unit]}`;
 function fmtDate(iso, opts) {
   const [y, m, d] = iso.split("-").map(Number);
@@ -823,7 +869,17 @@ function avatar(s, cls = "") {
   const img = imgTag(iconSrc(s));
   return `<div class="avatar ${cls}" style="--tint:${tintOf(s)}" aria-hidden="true">${img}<span class="lt">${letter}</span></div>`;
 }
-document.addEventListener("error", e => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
+// A failed icon.localhost image is removed (letter tile shows). Retry: at most 2 debounced re-renders per URL per session (~6 s, ~20 s); mzstatic never retried.
+const ICON_TRIES = new Map(); let iconRetryT = 0;
+function iconRetry(src) {
+  if (!/^https?:\/\/icon\.localhost\//.test(src)) return;
+  const n = ICON_TRIES.get(src) || 0;
+  if (n >= 2) return;
+  ICON_TRIES.set(src, n + 1);
+  clearTimeout(iconRetryT);
+  iconRetryT = setTimeout(() => { if (S && !document.hidden) { renderNextUp.h = null; renderAll(); } else if (S) iconRetryT = setTimeout(() => { renderNextUp.h = null; renderAll(); }, 6000); }, n === 0 ? 6000 : 14000);
+}
+document.addEventListener("error", e => { if (e.target.tagName === "IMG") { const s = e.target.getAttribute("src") || ""; e.target.remove(); iconRetry(s); } }, true);
 document.addEventListener("load", e => { if (e.target.tagName === "IMG") { e.target.classList.add("ok"); LOADED.add(esc(e.target.getAttribute("src"))); } }, true);
 function toast(t) { const e = $("toast"); e.textContent = t; e.classList.add("show"); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove("show"), 2400); }
 // Reads "9.99", "9,99", "1,234.50", "1.234,50", "1 234,50", "₪54.90". Negative, empty or garbage gives NaN.
@@ -855,12 +911,20 @@ function closeScrim(el) {
   el.classList.add("closing");
   setTimeout(() => { if (el.classList.contains("closing")) el.classList.remove("open", "closing"); }, 160);
 }
-function ask(title, body, ok = "OK") {
+// alt = label of an optional extra button; resolves true (ok), "alt" or false (cancel).
+let askFrom = null;
+function ask(title, body, ok = "OK", alt = "") {
   $("ask-t").textContent = title; $("ask-b").textContent = body; $("ask-ok").textContent = ok;
+  $("ask-alt").hidden = !alt; $("ask-alt").textContent = alt;
+  askFrom = document.activeElement;
   openScrim($("ask")); setTimeout(() => $("ask-ok").focus(), 30);
   return new Promise(r => askResolve = r);
 }
-function answer(v) { closeScrim($("ask")); askResolve?.(v); askResolve = null; }
+function answer(v) {
+  closeScrim($("ask")); askResolve?.(v); askResolve = null;
+  if (askFrom && askFrom.isConnected && askFrom !== document.body) askFrom.focus();
+  askFrom = null;
+}
 
 // Count-up: only when the value changed and the element is visible; jumps with reduced motion.
 function countTo(el, to, fmt) {
@@ -880,9 +944,7 @@ function setMax(v) { document.documentElement.classList.toggle("maximized", !!v)
 function setGlass(msg) {
   const el = document.documentElement, wall = !msg.glass && /^http:\/\/icon\.localhost\/__wallpaper/.test(msg.wallpaper || "") ? msg.wallpaper : "";
   el.classList.toggle("osglass", !!msg.glass);
-  const see = !msg.glass && !!(msg.settings && msg.settings.seeThrough); // OS acrylic > see-through > wallpaper
-  el.classList.toggle("seethrough", see);
-  el.classList.toggle("wallglass", !!wall && !see);
+  el.classList.toggle("wallglass", !!wall); // OS acrylic > wallpaper glass > plain
   const fl = !!(msg.frameless || (msg.settings && msg.settings.frameless));
   el.classList.toggle("frameless", fl);
   if (fl && !tbSent) { tbSent = true; send({ cmd: "titlebar", h: $("titlebar").offsetHeight || 36, right: 108 }); }
@@ -898,6 +960,7 @@ window.__recv = msg => {
   else if (t === "error") { if (isOpen($("scrim"))) { if (/manage/i.test(msg.text || "")) { $("e-details").open = true; setErr("e-manage", msg.text); $("e-manage").focus(); } else $("e-err").textContent = msg.text; } else toast(msg.text); }
   else if (t === "saved") { closeEdit(); toast(msg.text); }
   else if (t === "open") { if (S) handleOpen(msg); else pendingOpen.push(msg); }
+  else if (t === "data_dir_picked") dataDirPicked(msg);
   else scanRecv(msg);
 };
 function handleOpen(msg) {
@@ -987,7 +1050,7 @@ function renderSubs() {
   if (!S.subs.length) {
     const seen = new Set(), pops = [];
     for (const t of tpl()) { if (!seen.has(t[2]) && pops.length < 6) { seen.add(t[2]); pops.push(t); } }
-    $("list").innerHTML = `<div class="empty"><svg class="logo lg" viewBox="0 0 256 256" aria-hidden="true" style="margin:0 auto var(--s4)"><use href="#logo-sym"/></svg><h2>No subscriptions yet</h2><p>Add your first one, or import a list in Settings.</p><button class="btn primary lg" onclick="openEdit()">Add your first subscription</button>
+    $("list").innerHTML = `<div class="empty"><svg class="logo lg" viewBox="0 0 256 256" aria-hidden="true" style="margin:0 auto var(--s4)"><use href="#logo-sym"/></svg><h2>No subscriptions yet</h2><p>Add your first one, or import a list in Settings.</p><button class="btn primary lg" onclick="openEdit()">${ic("plus")}Add your first subscription</button>
       ${pops.length ? `<div class="popular">${pops.map(t => `<button class="ptile" data-pop="${esc(t[0])}">${avatar({ name: t[0], url: t[1] }, "md")}<span class="pn">${esc(t[0])}</span></button>`).join("")}</div>` : ""}</div>`;
     return;
   }
@@ -1007,7 +1070,7 @@ function renderSubs() {
     </div>`;
   }).join("");
   stag = false;
-  if (hlDone) { pendingHl = ""; $("list").querySelector(".row.hl")?.scrollIntoView({ block: "nearest" }); }
+  if (hlDone) { pendingHl = ""; $("list").querySelector(".row.hl")?.scrollIntoView({ block: "nearest", behavior: RM.matches ? "auto" : "smooth" }); }
 }
 $("list").addEventListener("click", e => {
   const p = e.target.closest("[data-pop]"); if (p) { pickTemplate(p.dataset.pop, true); return; }
@@ -1236,6 +1299,7 @@ function trap(e, scrim) {
   else if (!e.shiftKey && document.activeElement === z) { e.preventDefault(); a.focus(); }
 }
 document.addEventListener("keydown", e => {
+  if (isOpen($("busy"))) { e.preventDefault(); return; }
   if (isOpen($("ask"))) { if (e.key === "Escape") answer(false); else if (e.key === "Enter" && e.target.tagName !== "BUTTON") answer(true); else trap(e, $("ask")); return; }
   if (isOpen($("sheet"))) { if (e.key === "Escape") closeSheet(); else trap(e, $("sheet")); return; }
   if (isOpen($("scrim"))) {
@@ -1295,7 +1359,15 @@ function renderCalendar(c) {
   const first = new Date(c.y, c.m - 1, 1);
   $("cal-title").textContent = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const total = c.events.reduce((a, e) => a + (e.priceMain ?? 0), 0);
-  $("cal-sub").innerHTML = `${c.events.length} payment${c.events.length === 1 ? "" : "s"}${SEP}${esc(mainMoney(total))}`;
+  // Header chip: what you pay in each currency, then "= total" in the main currency (only the total
+  // when everything is already in the main currency).
+  const byCur = {};
+  for (const e of c.events) if (e.cur && e.price != null) byCur[e.cur] = (byCur[e.cur] || 0) + e.price;
+  const curs = Object.keys(byCur).sort((a, b) => (a === S.settings.main) - (b === S.settings.main) || byCur[b] - byCur[a]);
+  const parts = curs.length > 1 || (curs.length === 1 && curs[0] !== S.settings.main)
+    ? `<span class="ccur">${curs.map(k => esc(moneyFit(byCur[k], k))).join('<span class="cplus">+</span>')}</span><span class="ceq">=</span>` : "";
+  $("cal-sub").innerHTML = `${c.events.length} payment${c.events.length === 1 ? "" : "s"}${SEP}${parts}<b class="ctot">${esc(mainMoney(total))}</b>`;
+  $("cal-sub").title = curs.length ? curs.map(k => money(byCur[k], k)).join(" + ") + " = " + mainMoney(total) : "";
   // Fixed grid: day 1 is always top-left, 7 per row, so days never shift between months;
   // 29-31 just fill the last row. Each cell shows its own weekday instead of a header row.
   const days = new Date(c.y, c.m, 0).getDate();
@@ -1311,10 +1383,10 @@ function renderCalendar(c) {
     const l = byDay[d] || [];
     let evs = "";
     if (l.length === 1) evs = `<div class="evs one">${evTile(l[0])}<span class="evn" title="${esc(l[0].name)}" data-id="${Number(l[0].id)}">${esc(l[0].name)}</span></div>`;
-    else if (l.length > 1 && l.length <= 4) evs = `<div class="evs">${l.map(evTile).join("")}</div>`;
+    else if (l.length > 1 && l.length <= 4) evs = `<div class="evs${l.length === 2 ? " two" : ""}">${l.map(evTile).join("")}</div>`;
     else if (l.length > 4) evs = `<div class="evs">${l.slice(0, 3).map(evTile).join("")}<span class="tile more" title="${l.length - 3} more" data-more="${d}">+${l.length - 3}</span></div>`;
     const has = l.length ? ` has" tabindex="0" role="button" aria-label="${esc(dow + " " + d + ": " + l.map(e => e.name).join(", "))}` : "";
-    html += `<div class="day ${c.y === ty && c.m === tm && d === td ? "now" : ""}${has}" data-d="${d}"><span class="n">${d}</span><span class="wd ${we ? "we" : ""}">${esc(dow)}</span>${evs}</div>`;
+    html += `<div class="day ${c.y === ty && c.m === tm && d === td ? "now" : ""}${has}" data-d="${d}"><div class="dh"><span class="n">${d}</span><span class="wd ${we ? "we" : ""}">${esc(dow)}</span></div>${evs}</div>`;
   }
   calDays = byDay;
   const g = $("cal"); g.className = "cal-grid"; g.innerHTML = html;
@@ -1441,19 +1513,52 @@ function renderSettings() {
   $("s-remind").value = st.remind;
   if (document.activeElement !== $("s-budget")) $("s-budget").value = st.budget ? String(st.budget) : "";
   $("s-auto").checked = st.autostart;
-  $("s-see").checked = !!st.seeThrough;
   renderList("cat"); renderList("pay");
+  renderDataDir();
   $("s-rates").textContent = st.ratesStatus;
   $("s-update").textContent = st.updateStatus;
   document.querySelectorAll("#s-freq button").forEach(b => b.classList.toggle("on", b.dataset.v === st.updateFreq));
   $("s-install").style.display = st.latest ? "" : "none";
   $("s-install").disabled = $("s-check").disabled = $("banner-btn").disabled = st.updateBusy;
-  $("s-install").textContent = $("banner-btn").textContent = st.updateBusy ? "Installing…" : st.latest ? `Install ${st.latest}` : "Install";
+  $("s-install").innerHTML = $("banner-btn").innerHTML = ic("download") + `<span>${esc(st.updateBusy ? "Installing…" : st.latest ? `Install ${st.latest}` : "Install")}</span>`;
   $("banner").classList.toggle("show", !!st.latest);
   $("banner-t").textContent = `Subscribity ${st.latest} is available`;
-  $("s-backups").innerHTML = (S.backups || []).length ? S.backups.slice(0, 6).map(b =>
-    `<div><span>${esc(b.name.length > 10 ? fmtDate(b.name.slice(0, 10)) + b.name.slice(10) : fmtDate(b.name))}</span><button class="btn small" data-name="${esc(b.name)}">Restore</button></div>`).join("")
-    : `<div>No backup yet.</div>`;
+  const bks = S.backups || [], bt = $("s-bk-toggle");
+  $("s-backups").innerHTML = bks.map(b =>
+    `<div><span>${esc(b.name.length > 10 ? fmtDate(b.name.slice(0, 10)) + b.name.slice(10) : fmtDate(b.name))}</span><button class="btn small" data-name="${esc(b.name)}">${ic("undo")}Restore</button></div>`).join("");
+  bt.disabled = !bks.length;
+  bt.title = bks.length ? "" : "No backup yet.";
+  if (!bks.length) setBackupsOpen(false);
+  $("s-bk-sub").textContent = bks.length ? "A copy of your data is saved every week and kept for 30 days." : "No backup yet. A copy of your data is saved every week and kept for 30 days.";
+}
+// ---------- data folder ----------
+function renderDataDir() {
+  const d = S.data_dir; if (!d) return;
+  // Line breaks only after a "\" (whole folder names stay together; a too-long name still wraps).
+  const p = $("s-dd-path"); p.innerHTML = String(d.path || "").split("\\").map(esc).join("\\<wbr>"); p.title = d.path;
+  $("s-dd-note").hidden = !d.is_default;
+  $("s-dd-default").hidden = d.is_default;
+  ["s-dd-open", "s-dd-change", "s-dd-default"].forEach(id => $(id).disabled = !!d.busy);
+  const b = $("busy"), was = isOpen(b);
+  if (d.busy && !was) { busyFrom = document.activeElement; openScrim(b); setTimeout(() => $("busy").querySelector(".modal").focus(), 30); }
+  else if (!d.busy && was) { closeScrim(b); if (busyFrom && busyFrom.isConnected && !busyFrom.disabled) busyFrom.focus(); busyFrom = null; }
+}
+let busyFrom = null;
+async function dataDirPicked(m) {
+  if (m.status === "same" || m.status === "bad" || !m.path) { if (m.text) toast(m.text); return; }
+  const old = S.data_dir ? S.data_dir.path : "";
+  if (m.status === "empty") {
+    if (await ask("Move your data?", `Subscribity will copy your subscriptions, payment history, backups and email settings to ${m.path} and then remove them from ${old}. The app restarts when it is done.`, "Move"))
+      send({ cmd: "data_dir_move", path: m.path, mode: "copy" });
+    return;
+  }
+  if (m.status !== "has_data") return;
+  const n = Number(m.subs) || 0, when = m.modified ? `, last changed ${fmtDate(m.modified)}` : "";
+  const r = await ask("This folder already has Subscribity data",
+    `${m.path} holds ${n} subscription${n === 1 ? "" : "s"}${when}.\n\nUse that data: your current data stays in ${old}.\nReplace with my current data: the data in that folder is saved as a backup first.`,
+    "Use that data", "Replace with my current data");
+  if (r === true) send({ cmd: "data_dir_move", path: m.path, mode: "use" });
+  else if (r === "alt") send({ cmd: "data_dir_move", path: m.path, mode: "replace" });
 }
 // ---------- lists manager (categories + payment methods share one component) ----------
 const LISTS = {
@@ -1493,7 +1598,9 @@ function saveSettings() {
   const b = parsePrice($("s-budget").value);
   send({ cmd: "settings", main: $("s-cur").value, remind: Math.max(0, parseInt($("s-remind").value) || 0), budget: b > 0 ? b : 0 });
 }
-$("s-backups").addEventListener("click", e => { const b = e.target.closest("button[data-name]"); if (b) restore(b.dataset.name); });
+function setBackupsOpen(v) { $("s-backups").hidden = !v; $("s-bk-toggle").setAttribute("aria-expanded", v ? "true" : "false"); }
+$("s-bk-toggle").addEventListener("click", () => setBackupsOpen($("s-backups").hidden));
+$("s-backups").addEventListener("click",e => { const b = e.target.closest("button[data-name]"); if (b) restore(b.dataset.name); });
 async function restore(name) {
   if (await ask("Restore this backup?", "Your current data is saved as a backup first, so you can undo this.", "Restore")) send({ cmd: "restore", name });
 }
@@ -1691,7 +1798,7 @@ function renderReview(conn) {
     (skipped ? `<button class="btn" data-top="skipped">${SC.showSkipped ? "Hide" : "Show"} skipped (${skipped})</button>` : "") +
     (skipped && SC.showSkipped ? `<button class="btn" data-top="reset">Restore all skipped</button>` : "");
   if (!vis.length) {
-    $("sc-list").innerHTML = `<div class="empty"><h2>No subscriptions found</h2><p>${conn ? "Try a longer period, or import your PayPal file." : "Connect your email, or import your PayPal file."}</p></div>`;
+    $("sc-list").innerHTML = `<div class="empty"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:40px;height:40px;margin:0 auto var(--s3);display:block"><use href="#i-search"/></svg><h2>No subscriptions found</h2><p>${conn ? "Try a longer period, or import your PayPal file." : "Connect your email, or import your PayPal file."}</p></div>`;
     return;
   }
   $("sc-list").innerHTML = main.map(candCard).join("") +
@@ -1767,6 +1874,44 @@ function go(page) {
 }
 document.querySelectorAll("nav button[data-page]").forEach(b => b.onclick = () => go(b.dataset.page));
 document.addEventListener("contextmenu", e => { if (!e.target.closest("input,textarea")) e.preventDefault(); });
+// Smooth wheel scrolling: eased glide per scroll container. rAF runs only while a glide is in flight (0 idle cost).
+// Pass-through (native): reduced motion, ctrl+wheel, horizontal wheel, tiny trackpad deltas (|dy|<4), nothing scrollable that direction.
+// Keyboard / scrollbar drag / programmatic scrollTop: detected in 'scroll' (value differs from what we last set) -> glide cancelled, state resynced.
+const SMOOTH = new WeakMap();
+function smoothState(el) { let s = SMOOTH.get(el); if (!s) { s = { target: el.scrollTop, last: el.scrollTop, raf: 0, t: 0 }; SMOOTH.set(el, s); } return s; }
+function canScroll(el, dy) {
+  if (el.scrollHeight - el.clientHeight < 2) return false;
+  const o = getComputedStyle(el).overflowY;
+  if (o !== "auto" && o !== "scroll") return false;
+  return dy > 0 ? el.scrollTop < el.scrollHeight - el.clientHeight - 1 : el.scrollTop > 0;
+}
+function smoothStep(el, s, now) {
+  const dt = Math.min(64, now - s.t || 16.7); s.t = now;
+  const diff = s.target - s.last;
+  if (Math.abs(diff) < 0.5) { el.scrollTop = s.target; s.last = el.scrollTop; s.raf = 0; return; }
+  el.scrollTop = s.last + diff * (1 - Math.pow(1 - 0.16, dt / 16.7));
+  s.last = el.scrollTop;
+  if (Math.abs(el.scrollTop - s.target) < 0.5 || Math.abs(el.scrollTop - s.last) < 0.01 && Math.abs(el.scrollTop - s.target) < 1.5) { s.raf = 0; return; }
+  s.raf = requestAnimationFrame(t => smoothStep(el, s, t));
+}
+document.addEventListener("wheel", e => {
+  if (RM.matches || e.ctrlKey || e.defaultPrevented || !e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+  if (e.deltaMode === 0 && Math.abs(e.deltaY) < 4) return;
+  let el = e.target instanceof Element ? e.target : null;
+  while (el && el !== document.documentElement && !canScroll(el, e.deltaY)) el = el.parentElement;
+  if (!el || el === document.documentElement) return;
+  const dy = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? el.clientHeight : 1);
+  const s = smoothState(el), max = el.scrollHeight - el.clientHeight;
+  if (!s.raf) s.target = s.last = el.scrollTop;
+  e.preventDefault();
+  s.target = Math.max(0, Math.min(max, s.target + dy));
+  if (!s.raf) { s.t = performance.now(); s.raf = requestAnimationFrame(t => smoothStep(el, s, t)); }
+}, { passive: false });
+document.addEventListener("scroll", e => {
+  const el = e.target; if (!(el instanceof Element)) return;
+  const s = SMOOTH.get(el); if (!s) return;
+  if (Math.abs(el.scrollTop - s.last) > 1.5) { cancelAnimationFrame(s.raf); s.raf = 0; s.target = s.last = el.scrollTop; }
+}, true);
 send({ cmd: "ready" });
 </script>
 </body>

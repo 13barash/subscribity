@@ -13,6 +13,7 @@
 mod aa;
 mod actions;
 mod data;
+mod datadir;
 mod gdip;
 mod icons;
 mod detect;
@@ -64,6 +65,8 @@ const WM_UPDATE: u32 = 0x8000 + 8;
 const WM_INSTALLED: u32 = 0x8000 + 9;
 const WM_SCAN: u32 = 0x8000 + 10; // scan thread -> window: wParam kind, lParam boxed result
 const WM_ICONS: u32 = 0x8000 + 11; // --icons helper -> tray and window: new icons cached
+const WM_MOVED: u32 = 0x8000 + 12; // data-folder move thread -> window: lParam boxed result
+const OPEN_MOVED: usize = 5; // open code: Settings + "Data folder changed" (after a move)
 const OPEN_UNUSED: usize = 1_000_000; // open code + id: mark unused, show the savings sheet
 const TIMER_TICK: usize = 1;
 
@@ -100,6 +103,7 @@ struct App {
     scan_err_seen: bool,  // tray: scan_error already announced
     scan_try: i32,        // tray: day the auto-scan was last started
     notice_page: usize,   // tray: open_window code for a click on the last notification
+    moving: bool,         // window: data-folder move running (see datadir_ipc.rs)
 }
 
 static mut APP: *mut App = null_mut();
@@ -137,7 +141,7 @@ pub fn trim_memory() {
 }
 
 fn data_dir() -> std::path::PathBuf {
-    system::exe().parent().map(|d| d.to_path_buf()).unwrap_or_default()
+    datadir::get()
 }
 
 fn shell_open(target: &str, args: Option<&str>) {
@@ -203,19 +207,6 @@ fn set_see_through(h: HWND, on: bool) {
         let bb: [usize; 3] = [(1 | 2) | ((on as usize) << 32), rgn as usize, 0];
         enable(h, &bb);
         DeleteObject(rgn);
-    }
-}
-
-/// Keeps per-pixel alpha on the open window: frameless mode needs transparent corners whatever
-/// the see-through setting is (the page paints the background look). No-op under OS acrylic.
-fn apply_see_through() {
-    let a = app();
-    if a.glass || a.win.is_null() {
-        return;
-    }
-    set_see_through(a.win, true);
-    if let Some(wv) = &a.webview {
-        let _ = wv.set_background_color((0, 0, 0, 0));
     }
 }
 
@@ -855,7 +846,7 @@ fn find_window() -> HWND {
 }
 
 /// Tray side: show the window. Codes: 0 main, 1 settings, 2 add, 3 scan review, 4 reminder-day
-/// sheet, 1000+id edit, OPEN_UNUSED+id mark unused (checked before 1000+id).
+/// sheet, 5 settings after a data-folder move, 1000+id edit, OPEN_UNUSED+id mark unused (checked before 1000+id).
 fn open_window(code: usize) {
     let h = find_window();
     if !h.is_null() {
@@ -874,6 +865,7 @@ fn open_window(code: usize) {
         2 => "--window --add".to_string(),
         3 => "--window --found".to_string(),
         4 => "--window --remind".to_string(),
+        OPEN_MOVED => "--window --moved".to_string(),
         c if c >= OPEN_UNUSED => format!("--window --unused={}", c - OPEN_UNUSED),
         c if c >= 1000 => format!("--window --edit={}", c - 1000),
         _ => "--window".to_string(),
@@ -883,7 +875,7 @@ fn open_window(code: usize) {
 
 fn open_msg(code: usize) -> Option<Value> {
     match code {
-        1 => Some(json!({"type": "open", "page": "settings"})),
+        1 | OPEN_MOVED => Some(json!({"type": "open", "page": "settings"})),
         2 => Some(json!({"type": "open", "page": "subs", "add": true})),
         3 => Some(json!({"type": "open", "page": "scan"})),
         4 => Some(json!({"type": "open", "page": "remind"})),
@@ -965,11 +957,14 @@ fn create_window(code: usize) {
     if let Some(m) = open_msg(code) {
         a.pending.push(m.to_string());
     }
+    if code == OPEN_MOVED {
+        a.pending.push(json!({"type": "toast", "text": datadir::MOVED}).to_string());
+    }
 
     let host = a.host as isize;
     let profile = std::env::var("LOCALAPPDATA")
         .map(|p| std::path::PathBuf::from(p).join("Subscribity").join("WebView2"))
-        .unwrap_or_else(|_| data_dir().join("webview"));
+        .unwrap_or_else(|_| system::exe().with_file_name("webview")); // cache: next to the exe, not in the data
     let mut ctx = wry::WebContext::new(Some(profile));
     let icon_dir = data_dir();
     let built = wry::WebViewBuilder::with_web_context(&mut ctx)
@@ -1126,12 +1121,12 @@ fn state_json() -> Value {
         "iconsV": actions::icons_v(),
         "paypalColumns": detect::paypal::paypal_column_aliases(),
         "scan": scan::state(),
+        "data_dir": datadir::state(),
         "settings": {
             "main": st.settings.main_cur,
             "remind": st.settings.default_remind,
             "budget": st.settings.budget,
             "autostart": system::autostart_enabled(),
-            "seeThrough": st.settings.see_through,
             "ratesStatus": rates_status(),
             "updateFreq": st.settings.update_freq,
             "latest": if update::is_newer(&st.settings.latest_version, VERSION) { st.settings.latest_version.as_str() } else { "" },
@@ -1203,7 +1198,12 @@ fn handle_ipc(body: &str) {
     let a = app();
     let main_cur = a.store.settings.main_cur.clone();
     let default_remind = a.store.settings.default_remind;
-    match msg.get("cmd").and_then(|c| c.as_str()).unwrap_or("") {
+    let cmd = msg.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
+    // While the data folder moves, nothing may write to it: only page and window commands pass.
+    if a.moving && !matches!(cmd, "ready" | "titlebar" | "drag" | "resize" | "win" | "calendar" | "open_release" | "open_support") {
+        return;
+    }
+    match cmd {
         "ready" => {
             a.page_ready = true;
             eval(&state_json().to_string());
@@ -1365,12 +1365,6 @@ fn handle_ipc(body: &str) {
             }
         }
         "win" => win_op(msg.get("op").and_then(|o| o.as_str()).unwrap_or("")),
-        "see_through" => {
-            let on = msg.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
-            a.store.edit_settings(|s| s.see_through = on);
-            apply_see_through();
-            send_js(&state_json());
-        }
         "autostart" => {
             system::set_autostart(msg.get("on").and_then(|x| x.as_bool()).unwrap_or(false));
             send_js(&state_json());
@@ -1423,7 +1417,9 @@ fn handle_ipc(body: &str) {
         "open_support" => shell_open(SUPPORT_URL, None),
         "uninstall" => shell_open(&system::exe().to_string_lossy(), Some("--uninstall")),
         c => {
-            scan::handle_ipc(c, &msg);
+            if !datadir::handle_ipc(c, &msg) {
+                scan::handle_ipc(c, &msg);
+            }
         }
     }
 }
@@ -1453,7 +1449,13 @@ unsafe extern "system" fn win_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             if r == HTCLIENT as isize { HTCAPTION as isize } else { r }
         }
         WM_CLOSE => {
-            close_window();
+            if !app().moving {
+                close_window(); // not mid-move: it saves the window size into the data folder
+            }
+            0
+        }
+        WM_MOVED => {
+            datadir::on_moved(lp);
             0
         }
         WM_IPC => {
@@ -1660,11 +1662,15 @@ fn main() {
         return;
     }
     if has("--scan") {
-        scan::headless(); // weekly auto-scan: no window, own mutex
+        if datadir::init_quiet() {
+            scan::headless(); // weekly auto-scan: no window, own mutex
+        }
         return;
     }
     if has("--icons") {
-        icons_helper(); // icon fetch: no window, own mutex
+        if datadir::init_quiet() {
+            icons_helper(); // icon fetch: no window, own mutex
+        }
         return;
     }
     if has("--scan-dump") {
@@ -1694,7 +1700,12 @@ fn main() {
         }
         SetProcessDpiAwarenessContext(-4isize as _ /* per-monitor v2 */);
         let hinst = GetModuleHandleW(null()) as HINSTANCE;
-        let store = Store::load(data_dir());
+        if !window_mode && (has("--updated") || has("--moved")) {
+            system::close_others(true, false); // the old window is closing: let it save first
+        }
+        // Data folder (asks when the pointed one is missing); the tray moves pre-v0.5.0 data.
+        let Some((dir, migrated)) = datadir::startup(!window_mode, today()) else { return };
+        let store = Store::load(dir);
         let first_run = store.first_run;
 
         APP = Box::into_raw(Box::new(App {
@@ -1722,6 +1733,7 @@ fn main() {
             scan_err_seen: false,
             scan_try: 0,
             notice_page: 0,
+            moving: false,
         }));
         let a = app();
         let exe_icon = LoadIconW(hinst, 1 as _);
@@ -1737,6 +1749,8 @@ fn main() {
                 1
             } else if has("--remind") {
                 4
+            } else if has("--moved") {
+                OPEN_MOVED
             } else if let Some(id) = id_arg("--unused=") {
                 OPEN_UNUSED + id
             } else {
@@ -1765,13 +1779,18 @@ fn main() {
         if has("--updated") {
             notify(&format!("{} updated", APP_NAME), &format!("You now have version {}.", VERSION));
         }
+        if migrated == datadir::Migrated::Kept {
+            notify("Subscribity data folder", &format!("Using your data in {}. The older copy next to Subscribity.exe was not changed.", data_dir().display()));
+        }
         housekeeping();
         check_reminders(true);
         maybe_fetch_rates(false);
         maybe_check_updates(false);
         maybe_auto_scan();
         SetTimer(a.host, TIMER_TICK, 10 * 60 * 1000, None);
-        if first_run || has("--open") {
+        if has("--moved") {
+            open_window(OPEN_MOVED);
+        } else if first_run || has("--open") {
             open_window(0);
         }
         trim_memory();

@@ -9,29 +9,38 @@ pub const CURRENCIES: [&str; 30] = [
     "AED", "THB", "RON", "BGN",
 ];
 
-const SUBS_FILE: &str = "subscriptions.tsv";
-const SETTINGS_FILE: &str = "settings.ini";
+pub(crate) const SUBS_FILE: &str = "subscriptions.tsv";
+pub(crate) const SETTINGS_FILE: &str = "settings.ini";
 const PAYMENTS_FILE: &str = "payments.tsv";
 const RATES_FILE: &str = "rates.tsv";
 const STATE_FILE: &str = "state.tsv";
 pub const EXPORT_FILE: &str = "subscriptions-export.csv";
 pub const BACKUP_DIR: &str = "backups";
+/// Default data folder only: where the data folder is (see datadir.rs).
+pub const POINTER_FILE: &str = "data-folder.txt";
+/// Written and deleted right away to check that a data folder is writable.
+pub const PROBE_FILE: &str = "subscribity-write-test.tmp";
 /// Every file the app writes in its folder, including temp files a crash can leave behind
 /// (`<name>.tmp` now, `<stem>.tmp` in v0.1.0). Uninstall deletes exactly these + `backups\`.
-pub const OWN_FILES: [&str; 19] = [
+pub const OWN_FILES: [&str; 22] = [
     SUBS_FILE, SETTINGS_FILE, PAYMENTS_FILE, RATES_FILE, STATE_FILE, EXPORT_FILE, SCAN_FILE, MAIL_KEY_FILE,
     "subscriptions.tsv.tmp", "settings.ini.tmp", "payments.tsv.tmp", "rates.tsv.tmp", "state.tsv.tmp",
     "scan.tsv.tmp", "mail.key.tmp",
     "subscriptions.tmp", "settings.tmp", "rates.tmp", "state.tmp",
+    POINTER_FILE, "data-folder.txt.tmp", PROBE_FILE,
 ];
+/// The data files a data-folder move carries over (OWN_FILES minus temp files and the
+/// pointer). settings.ini is last: it is put in place last, so a folder with settings.ini
+/// holds a complete copy.
+pub const DATA_FILES: [&str; 8] = [SUBS_FILE, PAYMENTS_FILE, RATES_FILE, STATE_FILE, SCAN_FILE, MAIL_KEY_FILE, EXPORT_FILE, SETTINGS_FILE];
 /// Email scanner: results cache and the DPAPI-protected mailbox login (never in backups).
 pub const SCAN_FILE: &str = "scan.tsv";
 pub const MAIL_KEY_FILE: &str = "mail.key";
-const SETTINGS_KEYS: [&str; 20] = [
+const SETTINGS_KEYS: [&str; 19] = [
     "main_currency", "default_remind_days", "budget", "budget_alerted", "rates_base", "rates_date",
     "update_check", "update_last", "latest_version", "update_notified", "window",
     "scan_auto", "scan_period", "scan_last", "scan_new", "scan_error", "payment_methods",
-    "categories", "scan_price_up", "see_through",
+    "categories", "scan_price_up",
 ];
 const BACKUP_EVERY_DAYS: i32 = 7;
 const BACKUP_KEEP_DAYS: i32 = 30;
@@ -93,8 +102,6 @@ pub struct Settings {
     /// Scanner: tracked subscriptions charged more than their saved price (id, new price, currency),
     /// replaced by every scan.
     pub price_up: Vec<(u32, f64, String)>,
-    /// See-through window (no blur) instead of wallpaper glass. Off by default.
-    pub see_through: bool,
 }
 
 impl Default for Settings {
@@ -119,7 +126,6 @@ impl Default for Settings {
             pay_methods: None,
             categories: None,
             price_up: Vec::new(),
-            see_through: false,
         }
     }
 }
@@ -346,8 +352,20 @@ pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> bool {
     written.is_ok() && fs::rename(&tmp, path).is_ok()
 }
 
+/// `dir\name`, or `dir\name 2`, `dir\name 3`... when that already exists.
+pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let mut p = dir.join(name);
+    for n in 2.. {
+        if !p.exists() {
+            break;
+        }
+        p = dir.join(format!("{} {}", name, n));
+    }
+    p
+}
+
 /// Copies `from` over `to` the same way (copy to temp, flush, rename).
-fn copy_atomic(from: &Path, to: &Path) -> bool {
+pub(crate) fn copy_atomic(from: &Path, to: &Path) -> bool {
     let tmp = tmp_path(to);
     let copied = fs::copy(from, &tmp).and_then(|_| fs::OpenOptions::new().write(true).open(&tmp)?.sync_all());
     copied.is_ok() && fs::rename(&tmp, to).is_ok()
@@ -431,7 +449,6 @@ fn parse_settings(t: &str) -> Settings {
             "payment_methods" => s.pay_methods = Some(clean_list(v.split('|').map(str::to_string))),
             "categories" => s.categories = Some(clean_list(v.split('|').map(str::to_string))),
             "scan_price_up" => s.price_up = parse_price_up(v),
-            "see_through" => s.see_through = v == "1",
             _ => {}
         }
     }
@@ -545,7 +562,6 @@ impl Store {
         }
         let ups: Vec<String> = s.price_up.iter().map(|(id, p, c)| format!("{}:{}:{}", id, p, c)).collect();
         t.push_str(&format!("scan_price_up={}\n", ups.join("|")));
-        t.push_str(&format!("see_through={}\n", s.see_through as u8));
         t.push_str(&unknown_settings(&old));
         write_atomic(&self.dir.join(SETTINGS_FILE), &t);
         self.settings = s;
@@ -700,7 +716,7 @@ impl Store {
         v
     }
 
-    fn copy_files(from: &Path, to: &Path) -> bool {
+    pub(crate) fn copy_files(from: &Path, to: &Path) -> bool {
         let _ = fs::create_dir_all(to);
         let mut any = false;
         for f in [SUBS_FILE, SETTINGS_FILE, PAYMENTS_FILE] {
@@ -739,14 +755,8 @@ impl Store {
             return false;
         }
         // A second restore on the same day must not overwrite the first "before restore".
-        let mut keep = format!("{} before restore", iso(today));
-        for n in 2.. {
-            if !self.backup_root().join(&keep).exists() {
-                break;
-            }
-            keep = format!("{} before restore {}", iso(today), n);
-        }
-        if !Self::copy_files(&self.dir, &self.backup_root().join(keep)) && self.dir.join(SUBS_FILE).exists() {
+        let keep = unique_path(&self.backup_root(), &format!("{} before restore", iso(today)));
+        if !Self::copy_files(&self.dir, &keep) && self.dir.join(SUBS_FILE).exists() {
             return false; // couldn't save the current data first: don't overwrite it
         }
         let ok = Self::copy_files(&src, &self.dir);
@@ -1043,14 +1053,13 @@ mod tests {
         assert!(t.contains("theme=system\n") && t.matches("future_key").count() == 1 && t.matches("scan_auto=").count() == 1);
         assert_eq!(parse_settings("scan_period=5\n").scan_period, 12);
         assert!(!parse_settings("scan_auto=yes\n").scan_auto);
-        // v0.4.0 see_through: default off, round-trips once, bad values read as off.
-        assert!(!s.see_through && !parse_settings("see_through=2\n").see_through);
-        st.edit_settings(|s| s.see_through = true);
-        assert!(read_settings(&dir).see_through);
+        // v0.4.2 dropped the v0.4.0 see_through setting: an old line is kept verbatim (like any unknown key), once.
+        fs::write(dir.join(SETTINGS_FILE), "main_currency=EUR\nsee_through=1\nfuture_key=1\n").unwrap();
+        let mut st = Store::load(dir.clone());
         st.edit_settings(|s| s.window = (3, 4, 900, 700));
         let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
         assert_eq!((t.matches("see_through=").count(), t.matches("future_key").count()), (1, 1));
-        assert!(read_settings(&dir).see_through);
+        assert_eq!((read_settings(&dir).main_cur.as_str(), read_settings(&dir).window), ("EUR", (3, 4, 900, 700)));
         let _ = fs::remove_dir_all(dir);
     }
 

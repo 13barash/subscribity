@@ -27,7 +27,7 @@ function New-IconPng([int]$s) {
     # Background: rounded square, steel blue -> slate gradient.
     $m = [Math]::Max(0.5, 8 * $k)
     $bg = New-RoundRect $m $m ($s - 2 * $m) ($s - 2 * $m) (56 * $k)
-    $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush (New-Object System.Drawing.PointF 0, 0), (New-Object System.Drawing.PointF $s, $s), ([System.Drawing.Color]::FromArgb(255, 127, 166, 201)), ([System.Drawing.Color]::FromArgb(255, 62, 90, 120))
+    $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush (New-Object System.Drawing.PointF 0, 0), (New-Object System.Drawing.PointF $s, $s), ([System.Drawing.Color]::FromArgb(255, 92, 168, 240)), ([System.Drawing.Color]::FromArgb(255, 37, 99, 196))
     $g.FillPath($grad, $bg)
 
     # Renewal ring: a circular arrow around the centre.
@@ -54,7 +54,14 @@ function New-IconPng([int]$s) {
         $fmt = New-Object System.Drawing.StringFormat
         $fmt.Alignment = 'Center'; $fmt.LineAlignment = 'Center'
         $g.TextRenderingHint = 'AntiAliasGridFit'
-        $g.DrawString('$', $font, (New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 62, 90, 120))), (New-Object System.Drawing.RectangleF ($cx - $cr), ($cy - $cr + 2 * $k), (2 * $cr), (2 * $cr)), $fmt)
+        # Center the "$" by its real glyph outline, not the font's line box (which sits it off-center).
+        $gp = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $gp.AddString('$', $font.FontFamily, [int][System.Drawing.FontStyle]::Bold, [float](52 * $k), (New-Object System.Drawing.PointF 0, 0), [System.Drawing.StringFormat]::GenericTypographic)
+        $bb = $gp.GetBounds()
+        $mx = New-Object System.Drawing.Drawing2D.Matrix
+        $mx.Translate([float]($cx - $bb.X - $bb.Width / 2), [float]($cy - $bb.Y - $bb.Height / 2))
+        $gp.Transform($mx)
+        $g.FillPath((New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 37, 99, 196))), $gp)
     } else {
         $cr = 32 * $k
         $g.FillEllipse((New-Object System.Drawing.SolidBrush $white), $cx - $cr, $cy - $cr, 2 * $cr, 2 * $cr)

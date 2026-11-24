@@ -299,7 +299,7 @@ pub fn dump(args: &[String]) {
 }
 
 fn dump_run(out: &std::path::Path) -> Result<(), String> {
-    let l = store::load_key(&data_dir()).ok_or("no mail.key next to the exe")?;
+    let l = store::load_key(&data_dir()).ok_or("no mail.key in the data folder")?;
     let cancel = AtomicBool::new(false);
     let ie = |e: ImapError| match e {
         ImapError::Auth(s) | ImapError::Tls(s) | ImapError::Net(s) | ImapError::Proto(s) => s,

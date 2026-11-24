@@ -22,7 +22,8 @@ mod mail;
 pub(crate) mod appstore;
 pub use mail::{dump, headless, test_connect};
 pub(crate) use mail::same_exe;
-use mail::{apply, host_for, scan_mail, test_login, Outcome, ScanLock};
+pub(crate) use mail::ScanLock;
+use mail::{apply, host_for, scan_mail, test_login, Outcome};
 use store::{Login, ScanFile};
 
 const PROGRESS_GAP: Duration = Duration::from_millis(200);
@@ -95,6 +96,12 @@ fn candidates() -> Vec<Value> {
 
 fn send_list() {
     send_js(&json!({"type": "scan_list", "candidates": candidates()}));
+}
+
+/// Window process: a scan, login check or App Store lookup is running.
+pub fn busy() -> bool {
+    let r = rt();
+    r.busy || r.connecting || r.looking_up
 }
 
 /// `state.scan` (window process only).

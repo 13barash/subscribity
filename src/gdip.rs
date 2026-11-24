@@ -126,20 +126,22 @@ impl Gdip {
     }
 
     /// Draws `img` fitted and centred into the `size` x `size` square at the origin of `dc`,
-    /// scaled up or down with high-quality bicubic (edges clamped, no halo).
-    pub unsafe fn draw_fit(&self, dc: HDC, img: &Image, size: i32) -> bool {
+    /// scaled up or down with high-quality bicubic (edges clamped, no halo). Returns the source's
+    /// longer side in pixels (None when it could not be drawn).
+    pub unsafe fn draw_fit(&self, dc: HDC, img: &Image, size: i32) -> Option<u32> {
         let (mut w, mut h) = (0u32, 0u32);
         (self.f.width)(img.raw, &mut w);
         (self.f.height)(img.raw, &mut h);
         let (w, h) = (w as i64, h as i64);
         if w <= 0 || h <= 0 || w > 32_000 || h > 32_000 {
-            return false;
+            return None;
         }
+        let native = w.max(h) as u32;
         let s = size as i64;
         let (dw, dh) = if w >= h { (s, (s * h / w).max(1)) } else { ((s * w / h).max(1), s) };
         let (mut g, mut attr) = (null_mut(), null_mut());
         if (self.f.gfx_from_hdc)(dc, &mut g) != 0 || g.is_null() {
-            return false;
+            return None;
         }
         (self.f.set_interp)(g, 7); // HighQualityBicubic
         (self.f.set_pixel_offset)(g, 4); // Half
@@ -152,7 +154,7 @@ impl Gdip {
             (self.f.attr_dispose)(attr);
         }
         (self.f.gfx_delete)(g);
-        st == 0
+        (st == 0).then_some(native)
     }
 }
 
