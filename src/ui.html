@@ -79,9 +79,9 @@ select option { background: var(--panel); }
 .row.paused { opacity: .55; }
 .avatar { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; color: #fff; font-size: 17px; overflow: hidden; flex: none; }
 .avatar img ~ .lt { display: none; }
-.avatar img { width: 28px; height: 28px; border-radius: 6px; background: #fff; padding: 2px; }
+.avatar img { width: 38px; height: 38px; border-radius: 10px; background: #fff; padding: 3px; }
 .avatar.sm { width: 30px; height: 30px; border-radius: 9px; font-size: 13px; }
-.avatar.sm img { width: 20px; height: 20px; }
+.avatar.sm img { width: 26px; height: 26px; border-radius: 7px; padding: 2px; }
 .name { font-weight: 650; font-size: 15px; }
 .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
 .tag { font-size: 11.5px; padding: 1px 8px; border-radius: 99px; background: var(--panel2); color: var(--muted); }
@@ -107,7 +107,11 @@ select option { background: var(--panel); }
 .day.out { background: var(--panel2); opacity: .5; }
 .day.now .n { background: var(--accent); color: #fff; border-radius: 99px; padding: 0 7px; }
 .day .n { font-weight: 700; display: inline-block; margin-bottom: 4px; }
-.ev { display: block; border-radius: 6px; padding: 2px 6px; margin-bottom: 3px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; font-weight: 600; }
+.ev { display: flex; align-items: center; gap: 4px; border-radius: 6px; padding: 2px 6px 2px 2px; margin-bottom: 3px; color: #fff; white-space: nowrap; overflow: hidden; cursor: pointer; font-weight: 600; }
+.ev .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ev img { width: 16px; height: 16px; flex: none; border-radius: 4px; background: #fff; padding: 1px; }
+.ev .lt { width: 16px; flex: none; text-align: center; }
+.ev img ~ .lt { display: none; }
 .ev.trial { outline: 2px dashed rgba(255,255,255,.6); outline-offset: -2px; }
 
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -633,6 +637,12 @@ document.addEventListener("keydown", e => {
 });
 
 // ---------- calendar ----------
+// Same icon source as avatar(): the sub's site favicon, letter when it has none or it fails.
+function evIcon(e) {
+  const d = domain(S.subs.find(s => s.id === e.id)?.url);
+  const letter = esc((String(e.name).trim()[0] || "?").toUpperCase());
+  return `${d ? `<img src="${favicon(d)}" alt="">` : ""}<span class="lt">${letter}</span>`;
+}
 function moveMonth(d) {
   const [ty, tm] = S.today.split("-").map(Number);
   if (!cal || d === 0) cal = { y: ty, m: tm };
@@ -653,7 +663,7 @@ function renderCalendar(c) {
   for (let i = 0; i < Math.ceil((startDow + days) / 7) * 7; i++) {
     const d = i - startDow + 1;
     if (d < 1 || d > days) { html += `<div class="day out"></div>`; continue; }
-    const evs = (byDay[d] || []).map(e => `<span class="ev ${e.trial ? "trial" : ""}" style="background:${color(e.name)}" title="${esc(e.name)} ${esc(money(e.price, e.cur))}${e.trial ? " (trial ends)" : ""}" onclick="openEdit(${e.id})">${esc(e.name)}</span>`).join("");
+    const evs = (byDay[d] || []).map(e => `<span class="ev ${e.trial ? "trial" : ""}" style="background:${color(e.name)}" title="${esc(e.name)} ${esc(money(e.price, e.cur))}${e.trial ? " (trial ends)" : ""}" onclick="openEdit(${e.id})">${evIcon(e)}<span class="nm">${esc(e.name)}</span></span>`).join("");
     html += `<div class="day ${c.y === ty && c.m === tm && d === td ? "now" : ""}"><span class="n">${d}</span>${evs}</div>`;
   }
   $("cal").innerHTML = html;
