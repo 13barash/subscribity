@@ -2,6 +2,8 @@
 
 **Know what your subscriptions cost, and never get surprised by a renewal again.**
 
+[**Download for Windows**](https://github.com/13barash/subscribity/releases/latest) · [Buy me a coffee ☕](https://buymeacoffee.com/13barash)
+
 Subscribity is a small, free app for Windows that keeps track of everything you pay for
 regularly: streaming, music, cloud storage, phone plans, gym, software, anything. It sits
 quietly next to the clock, tells you what you spend each month and each year, and warns you
@@ -92,6 +94,13 @@ The app only goes online to:
 - get today's exchange rates (only if you use more than one currency),
 - show the logo of a service (only if you entered its website),
 - check for updates.
+
+## Support Subscribity
+
+Subscribity is free and always will be. If it helps you save money and you'd like to say thanks,
+you can [buy me a coffee](https://buymeacoffee.com/13barash). It's completely optional.
+
+<a href="https://buymeacoffee.com/13barash"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-ffdd00?style=for-the-badge&logo=buymeacoffee&logoColor=black" alt="Buy me a coffee"></a>
 
 ## Questions or problems?
 
