@@ -265,7 +265,7 @@ pub fn headless() {
 
 /// The window belongs to a process started from this same exe (a test copy never pokes the
 /// installed tray).
-unsafe fn same_exe(h: HWND) -> bool {
+pub(crate) unsafe fn same_exe(h: HWND) -> bool {
     use std::os::windows::ffi::OsStringExt;
     let mut pid = 0;
     GetWindowThreadProcessId(h, &mut pid);

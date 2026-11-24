@@ -18,6 +18,7 @@ pub struct Item {
     pub when: String,
     pub price: String,
     pub tone: u8, // 0 normal, 1 soon, 2 today, 3 trial
+    pub icon: String, // icons.rs cache key: App Store artwork URL, else domain; "" = letter tile
 }
 
 pub struct Data {
@@ -39,10 +40,34 @@ struct State {
     hwnd: HWND,
     data: Data,
     hover: i32,
-    targets: Vec<(RECT, i32)>, // hit areas; i32: -1 open, -2 add, -3 review, >=0 item index
+    targets: Vec<(RECT, i32)>, // hit areas; i32: -1 open, -2 add, -3 review, -4 close, >=0 item index
     fonts: [HFONT; 7], // 5, 6: Arial for ₪ (Segoe UI hints it into a box below ~18 px)
     scale: f32,
     closing: bool, // DestroyWindow already called (it re-enters via WM_ACTIVATE)
+    bmps: Vec<HBITMAP>, // cached icon per item (null: letter tile), freed on destroy
+}
+
+/// Loads the cached icon of each row (a missing file gives null: letter tile).
+fn load_icons(items: &[Item]) -> Vec<HBITMAP> {
+    let dir = crate::data_dir();
+    items.iter().map(|it| if it.icon.is_empty() { null_mut() } else { crate::icons::load(&crate::icons::path(&dir, &it.icon)) }).collect()
+}
+
+unsafe fn free_icons(st: &mut State) {
+    for b in st.bmps.drain(..).filter(|b| !b.is_null()) {
+        DeleteObject(b);
+    }
+}
+
+/// New icons were downloaded (WM_ICONS): reload them and repaint the open popup.
+pub fn reload_icons() {
+    unsafe {
+        if let Some(st) = STATE.as_mut().filter(|s| !s.closing) {
+            free_icons(st);
+            st.bmps = load_icons(&st.data.items);
+            InvalidateRect(st.hwnd, null(), 0);
+        }
+    }
 }
 
 /// Destroys the popup once: destroying the active window deactivates it, and the
@@ -185,6 +210,7 @@ unsafe fn show(hinst: HINSTANCE, scale: f32, anchor: (HWND, u32), data: Data) {
     crate::dwm_set(hwnd, 20, 1); // dark
     STATE = Some(State {
         hwnd,
+        bmps: load_icons(&data.items),
         data,
         hover: i32::MIN,
         closing: false,
@@ -263,7 +289,12 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
     let d = &st.data;
 
     text(dc, "Per month", rc(18, 14, 200, 18), f_small, MUTED, DT_LEFT);
-    text(dc, &d.caption, rc(140, 14, 182, 18), f_small, MUTED, DT_RIGHT);
+    text(dc, &d.caption, rc(100, 14, 182, 18), f_small, MUTED, DT_RIGHT);
+    // Close button, top right (the popup also closes on Esc or a click outside).
+    let x_btn = rc(290, 8, 32, 32);
+    fill(dc, x_btn, if st.hover == -4 { HOVER } else { LINE }, s(10));
+    text(dc, "×", x_btn, f_big, if st.hover == -4 { TEXT } else { MUTED }, DT_CENTER);
+    st.targets.push((x_btn, -4));
     text(dc, &d.total, rc(18, 34, 304, 36), f_big, TEXT, DT_LEFT);
     let mut y = 78;
     if let Some((ratio, label)) = &d.budget {
@@ -296,16 +327,21 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
         }
         st.targets.push((row, i as i32));
         let av = color_for(&it.name);
-        let b = CreateSolidBrush(av);
-        let ob = SelectObject(dc, b);
-        let op = SelectObject(dc, GetStockObject(NULL_PEN));
         let a = rc(18, y + 8, 30, 30);
-        RoundRect(dc, a.left, a.top, a.right, a.bottom, s(9), s(9));
-        SelectObject(dc, op);
-        SelectObject(dc, ob);
-        DeleteObject(b);
-        let letter: String = it.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_else(|| "?".into());
-        text(dc, &letter, a, f_name, 0x00FFFFFF, DT_CENTER);
+        let bmp = st.bmps.get(i).copied().unwrap_or(null_mut());
+        if !bmp.is_null() {
+            crate::icons::draw(dc, a, bmp, av, s(8), s(3));
+        } else {
+            let b = CreateSolidBrush(av);
+            let ob = SelectObject(dc, b);
+            let op = SelectObject(dc, GetStockObject(NULL_PEN));
+            RoundRect(dc, a.left, a.top, a.right, a.bottom, s(9), s(9));
+            SelectObject(dc, op);
+            SelectObject(dc, ob);
+            DeleteObject(b);
+            let letter: String = it.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_else(|| "?".into());
+            text(dc, &letter, a, f_name, 0x00FFFFFF, DT_CENTER);
+        }
         text(dc, &it.name, rc(58, y + 5, 170, 20), f_name, TEXT, DT_LEFT);
         let tone = match it.tone { 1 => ORANGE, 2 => RED, 3 => PURPLE, _ => MUTED };
         text(dc, &it.when, rc(58, y + 24, 170, 18), f_sub, tone, DT_LEFT);
@@ -380,6 +416,10 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 -1 => Some(Action::Open),
                 -2 => Some(Action::Add),
                 -3 => Some(Action::Review),
+                -4 => {
+                    destroy(st);
+                    None
+                }
                 i if i >= 0 => st.data.items.get(i as usize).map(|it| Action::Edit(it.id)),
                 _ => None,
             };
@@ -403,6 +443,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             for f in st.fonts {
                 DeleteObject(f);
             }
+            free_icons(st);
             STATE = None;
             CLOSED_AT = GetTickCount();
             crate::trim_memory();

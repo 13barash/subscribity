@@ -2,7 +2,7 @@
 //! Search API gives the app icon (`artworkUrl100`) and the developer's website (`sellerUrl`).
 //! Only the app name (and the store country) is sent. Window scans only, a few per scan, each
 //! with a 5 s timeout; results are cached in scan.tsv (`a` lines). Declared from scan.rs.
-//! Own small GET (update.rs's has no timeouts and is protected code).
+//! Own small GET (update.rs's has no timeouts and is protected code), also used by icons.rs.
 use crate::services::{norm, registrable};
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
@@ -26,19 +26,25 @@ fn encode(s: &str) -> String {
         .collect()
 }
 
-/// HTTPS GET of `path` on `host`, 5 s timeouts, no redirects followed.
-fn get(host: &str, path: &str) -> Option<Vec<u8>> {
+/// HTTPS GET of `path` on `host`, 5 s timeouts, no redirects followed, body up to 256 KB.
+pub(crate) fn get(host: &str, path: &str) -> Option<Vec<u8>> {
+    fetch(host, path).ok()
+}
+
+/// Like `get`; Err(status) when the server answered something other than a complete 200
+/// (Err(413): body over 256 KB; Err(0): no answer at all, i.e. offline, timeout, cut-off body).
+pub(crate) fn fetch(host: &str, path: &str) -> Result<Vec<u8>, u32> {
     unsafe {
         let ses = WinHttpOpen(w("Subscribity").as_ptr(), 4 /* automatic proxy */, null(), null(), 0);
         if ses.is_null() {
-            return None;
+            return Err(0);
         }
         WinHttpSetTimeouts(ses, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS);
         let con = WinHttpConnect(ses, w(host).as_ptr(), 443, 0);
         let req = if con.is_null() { null_mut() } else {
             WinHttpOpenRequest(con, w("GET").as_ptr(), w(path).as_ptr(), null(), null(), null(), 0x0080_0000 /* secure */)
         };
-        let mut out = None;
+        let mut out = Err(0);
         if !req.is_null() {
             let mut policy = 1u32; // WINHTTP_OPTION_REDIRECT_POLICY_NEVER
             WinHttpSetOption(req, 88 /* REDIRECT_POLICY */, &mut policy as *mut u32 as *mut c_void, 4);
@@ -46,13 +52,20 @@ fn get(host: &str, path: &str) -> Option<Vec<u8>> {
                 let (mut status, mut size) = (0u32, 4u32);
                 WinHttpQueryHeaders(req, 19 | 0x2000_0000, null(), &mut status as *mut u32 as *mut c_void, &mut size, null_mut());
                 let mut body = Vec::new();
+                if status != 200 {
+                    out = Err(status);
+                }
                 while status == 200 {
                     let mut avail = 0u32;
-                    if WinHttpQueryDataAvailable(req, &mut avail) == 0 || body.len() + avail as usize > LIMIT {
+                    if WinHttpQueryDataAvailable(req, &mut avail) == 0 {
+                        break;
+                    }
+                    if body.len() + avail as usize > LIMIT {
+                        out = Err(413); // too large: a lasting answer, not a network error
                         break;
                     }
                     if avail == 0 {
-                        out = Some(std::mem::take(&mut body));
+                        out = Ok(std::mem::take(&mut body));
                         break;
                     }
                     let mut buf = vec![0u8; avail as usize];
@@ -80,6 +93,14 @@ fn https_host(u: &str) -> Option<String> {
     (!host.is_empty() && !host.contains('@') && host.contains('.')).then_some(host)
 }
 
+/// An https URL on Apple's artwork CDN (mzstatic.com), at most 300 characters, no spaces or
+/// tabs: the only image URLs stored on subscriptions and fetched for the tray.
+pub(crate) fn is_artwork(u: &str) -> bool {
+    u.len() <= 300
+        && !u.contains(|c: char| c.is_whitespace() || c.is_control())
+        && https_host(u).is_some_and(|h| h == "mzstatic.com" || h.ends_with(".mzstatic.com"))
+}
+
 /// (icon, site) from a search answer; ("", "") when no app matches `name`. The app must share
 /// its first word with `name`, the icon must be on Apple's CDN.
 pub fn parse(body: &[u8], name: &str) -> (String, String) {
@@ -91,10 +112,7 @@ pub fn parse(body: &[u8], name: &str) -> (String, String) {
         return Default::default();
     }
     let art = r["artworkUrl100"].as_str().unwrap_or("");
-    let icon = match https_host(art) {
-        Some(h) if h == "mzstatic.com" || h.ends_with(".mzstatic.com") => art.to_string(),
-        _ => String::new(),
-    };
+    let icon = if is_artwork(art) { art.to_string() } else { String::new() };
     let site = r["sellerUrl"].as_str().and_then(|u| https_host(u).or_else(|| https_host(&u.replacen("http://", "https://", 1))));
     let site = site.map(|h| registrable(&h)).filter(|s| s != "apple.com" || first == "apple").unwrap_or_default();
     (icon, site)
@@ -128,6 +146,12 @@ mod tests {
         assert_eq!(parse(b"<html>", "Acme"), Default::default());
         assert_eq!(encode("Me PRO+ & co"), "Me%20PRO%2B%20%26%20co");
         assert_eq!(country("ILS"), "il");
+        assert!(is_artwork("https://is1-ssl.mzstatic.com/image/thumb/x/100x100bb.jpg"));
+        assert!(!is_artwork("https://evil.example/mzstatic.com/a.jpg"));
+        assert!(!is_artwork("http://is1-ssl.mzstatic.com/a.jpg"));
+        assert!(!is_artwork("https://notmzstatic.com/a.jpg"));
+        assert!(!is_artwork("https://a.mzstatic.com/a b.jpg"));
+        assert!(!is_artwork(&format!("https://a.mzstatic.com/{}", "x".repeat(300))));
     }
 
     #[test]

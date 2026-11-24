@@ -158,6 +158,8 @@ pub fn uninstall() {
         }
     }
 
+    // Icon cache (tray popup): rebuilt on demand, so it goes even when the data stays.
+    let _ = fs::remove_dir_all(dir.join(crate::icons::DIR));
     // Only the app's own files: the folder may also hold the user's other files.
     if delete_data {
         for f in data::OWN_FILES {
@@ -197,11 +199,12 @@ pub fn uninstall() {
         .spawn();
 }
 
-/// Asks the running tray and window to close and waits until both processes have exited
-/// (their mutexes become abandoned), so neither writes a file or holds the exe afterwards.
+/// Asks the running tray and window to close and waits until both processes, and an icon
+/// download helper (it exits by itself), have exited (their mutexes become abandoned), so
+/// none writes a file or holds the exe afterwards.
 fn close_running() {
     unsafe {
-        let mutexes: Vec<HANDLE> = ["Local\\SubscribityWindowProcess", "Local\\SubscribityTrayApp"]
+        let mutexes: Vec<HANDLE> = ["Local\\SubscribityWindowProcess", "Local\\SubscribityTrayApp", crate::icons::MUTEX]
             .iter()
             .map(|n| OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, w(n).as_ptr()))
             .collect();

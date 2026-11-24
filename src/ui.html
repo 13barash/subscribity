@@ -107,12 +107,22 @@ select option { background: var(--panel); }
 .day.out { background: var(--panel2); opacity: .5; }
 .day.now .n { background: var(--accent); color: #fff; border-radius: 99px; padding: 0 7px; }
 .day .n { font-weight: 700; display: inline-block; margin-bottom: 4px; }
-.ev { display: flex; align-items: center; gap: 4px; border-radius: 6px; padding: 2px 6px 2px 2px; margin-bottom: 3px; color: #fff; white-space: nowrap; overflow: hidden; cursor: pointer; font-weight: 600; }
-.ev .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ev img { width: 16px; height: 16px; flex: none; border-radius: 4px; background: #fff; padding: 1px; }
-.ev .lt { width: 16px; flex: none; text-align: center; }
-.ev img ~ .lt { display: none; }
-.ev.trial { outline: 2px dashed rgba(255,255,255,.6); outline-offset: -2px; }
+.day .wd { float: right; font-size: 11px; color: var(--muted); }
+.day .wd.we { color: var(--accent); }
+.evs { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.evs.one { flex-direction: column; flex-wrap: nowrap; gap: 3px; }
+.evn { font-size: 11px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; cursor: pointer; }
+.tile { position: relative; width: 26px; height: 26px; flex: none; box-sizing: border-box; border: 2px solid var(--ring, var(--line)); border-radius: 8px; background: var(--ring, var(--panel2)); color: #fff; overflow: hidden; cursor: pointer; font-weight: 700; font-size: 12px; line-height: 22px; text-align: center; }
+.evs.one .tile { width: 32px; height: 32px; font-size: 15px; line-height: 28px; }
+.tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #fff; border-radius: 6px; }
+.tile.trial { border-style: dashed; }
+.tile.more { background: var(--panel2); border-color: var(--line); color: var(--text); font-size: 11px; }
+.calpop { position: fixed; z-index: 60; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 6px; min-width: 180px; max-width: min(300px, calc(100vw - 16px)); max-height: 60vh; overflow: auto; }
+.calpop .it { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.calpop .it:hover { background: var(--panel2); }
+.calpop .it .tile { cursor: inherit; }
+.calpop .it .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calpop .it .m { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); }
@@ -387,6 +397,7 @@ select option { background: var(--panel); }
       <label class="full">Notes<textarea id="e-notes" rows="2" maxlength="500"></textarea></label>
       <label class="check"><span class="switch"><input type="checkbox" id="e-active" checked><span></span></span>Active</label>
       <label class="check"><span class="switch"><input type="checkbox" id="e-trial" onchange="trialLabel()"><span></span></span>Free trial</label>
+      <div class="hist" id="e-first"></div>
       <div class="hist" id="e-hist"></div>
     </div>
     <div class="err" id="e-err"></div>
@@ -442,12 +453,24 @@ function domain(u) {
   try { return new URL(/^https?:\/\//i.test(u) ? u : "https://" + u).hostname; } catch { return ""; }
 }
 const favicon = d => `https://icons.duckduckgo.com/ip3/${esc(d)}.ico`;
+// App Store artwork (mzstatic) when present, else the site's favicon, else "". Result is already escaped.
+// Icon service answers subdomains like ps.btl.gov.il with a generic placeholder, so ask for
+// the site's main domain (btl.gov.il). Same list as services.rs SECOND_LEVEL.
+const SECOND_LEVEL = ["co.uk","org.uk","co.il","org.il","ac.il","net.il","gov.il","com.au","co.jp","com.br","co.nz","co.za","com.mx","com.tr"];
+function registrable(h) {
+  const p = String(h || "").toLowerCase().replace(/\.$/, "").split(".");
+  if (p.length <= 2) return p.join(".");
+  return p.slice(SECOND_LEVEL.includes(p.slice(-2).join(".")) ? -3 : -2).join(".");
+}
+function iconSrc(s) {
+  const d = registrable(domain(s.url));
+  if (/^https:\/\/[a-z0-9.-]+\.mzstatic\.com\//i.test(s.icon || "")) return esc(s.icon);
+  return d ? favicon(d) : "";
+}
 function avatar(s, cls = "") {
-  const d = domain(s.url), letter = esc((String(s.name).trim()[0] || "?").toUpperCase());
+  const letter = esc((String(s.name).trim()[0] || "?").toUpperCase());
   // Letter is always rendered; the icon hides it, and is removed (by the capture listener below) if it fails to load.
-  // App Store artwork (from the scanner) when present, else the site's favicon.
-  const art = /^https:\/\/[a-z0-9.-]+\.mzstatic\.com\//i.test(s.icon || "") ? esc(s.icon) : "";
-  const img = art ? `<img src="${art}" alt="">` : d ? `<img src="${favicon(d)}" alt="">` : "";
+  const src = iconSrc(s), img = src ? `<img src="${src}" alt="">` : "";
   return `<div class="avatar ${cls}" style="background:${color(s.name)}">${img}<span class="lt">${letter}</span></div>`;
 }
 document.addEventListener("error", e => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
@@ -582,6 +605,7 @@ function useTemplate(name) {
   $("e-name").value = t[0]; $("e-url").value = t[1]; $("e-cat").value = t[2]; $("e-unit").value = String(t[3] ?? 2); $("e-every").value = 1;
   $("chips").innerHTML = ""; $("e-price").focus();
 }
+let editBase = { start: "", first: "", icon: "", url: "", isNew: true };
 function trialLabel() { $("e-date-l").textContent = $("e-trial").checked ? "Trial ends / first charge" : editing ? "Next payment" : "First payment"; }
 // preset (optional): {name, price, cur, every, unit, start, category, url, trial, notes, remind} overrides the stored/default values.
 function openEdit(id, preset) {
@@ -602,6 +626,10 @@ function openEdit(id, preset) {
   $("e-notes").value = p.notes ?? s?.notes ?? "";
   $("e-active").checked = s ? s.active : true;
   $("e-trial").checked = p.trial ?? (s ? s.inTrial : false);
+  const fi = String(p.first ?? s?.first ?? "").slice(0, 10);
+  editBase = { start: $("e-date").value, first: fi, icon: String(p.icon ?? s?.icon ?? ""), url: $("e-url").value.trim(), isNew: !s };
+  $("e-first").style.display = isoOk(fi) ? "" : "none";
+  $("e-first").innerHTML = isoOk(fi) ? `<b>First payment:</b> ${esc(fmtDate(fi))}` : "";
   const h = s?.history ?? [];
   $("e-hist").style.display = h.length ? "" : "none";
   $("e-hist").innerHTML = h.length ? "<b>Price history:</b> " + h.slice().reverse().map(x => `${esc(money(x.price, s.cur))} until ${fmtDate(x.date)}`).join(" · ") : "";
@@ -621,7 +649,10 @@ function saveSub() {
     every: Math.max(1, parseInt($("e-every").value) || 1), unit: parseInt($("e-unit").value),
     start: $("e-date").value, category: $("e-cat").value.trim(), payment: $("e-pay").value.trim(),
     remind: Math.max(0, parseInt($("e-remind").value) || 0), url: $("e-url").value.trim(),
-    notes: $("e-notes").value, active: $("e-active").checked, trial: $("e-trial").checked } });
+    notes: $("e-notes").value, active: $("e-active").checked, trial: $("e-trial").checked,
+    // Icon follows the Website field; first payment is kept, except a new subscription whose preset date was changed.
+    icon: $("e-url").value.trim() === editBase.url ? editBase.icon : "",
+    first: editBase.isNew && $("e-date").value !== editBase.start ? "" : editBase.first } });
 }
 async function delSub() {
   const s = S.subs.find(x => x.id === editing);
@@ -637,12 +668,28 @@ document.addEventListener("keydown", e => {
 });
 
 // ---------- calendar ----------
-// Same icon source as avatar(): the sub's site favicon, letter when it has none or it fails.
-function evIcon(e) {
-  const d = domain(S.subs.find(s => s.id === e.id)?.url);
+// Tile: ring + letter on the name's color; the image (same source as avatar()) covers the letter and is removed if it fails.
+function evTile(e) {
+  const sub = S.subs.find(s => s.id === e.id) || {};
+  const src = iconSrc({ url: sub.url, icon: sub.icon });
   const letter = esc((String(e.name).trim()[0] || "?").toUpperCase());
-  return `${d ? `<img src="${favicon(d)}" alt="">` : ""}<span class="lt">${letter}</span>`;
+  const tip = `${e.name} ${money(e.price, e.cur)}${e.trial ? " (trial ends)" : ""}`;
+  return `<span class="tile ${e.trial ? "trial" : ""}" style="--ring:${color(e.name)}" title="${esc(tip)}" onclick="openEdit(${Number(e.id)})">${src ? `<img src="${src}" alt="">` : ""}${letter}</span>`;
 }
+let calDays = {};
+function calMore(d, ev) {
+  ev.stopPropagation(); closeCalPop();
+  const list = calDays[d] || [], p = document.createElement("div");
+  p.className = "calpop"; p.id = "calpop";
+  p.innerHTML = list.map(e => `<div class="it" onclick="closeCalPop();openEdit(${Number(e.id)})">${evTile(e).replace(/ onclick="[^"]*"/, "")}<span class="t">${esc(e.name)}</span><span class="m">${esc(money(e.price, e.cur))}</span></div>`).join("");
+  document.body.appendChild(p);
+  const r = ev.currentTarget.getBoundingClientRect(), w = p.offsetWidth, h = p.offsetHeight;
+  p.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + "px";
+  p.style.top = Math.max(8, r.bottom + 4 + h > innerHeight ? r.top - h - 4 : r.bottom + 4) + "px";
+}
+function closeCalPop() { $("calpop")?.remove(); }
+document.addEventListener("click", closeCalPop);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeCalPop(); });
 function moveMonth(d) {
   const [ty, tm] = S.today.split("-").map(Number);
   if (!cal || d === 0) cal = { y: ty, m: tm };
@@ -655,17 +702,26 @@ function renderCalendar(c) {
   $("cal-title").textContent = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const total = c.events.reduce((a, e) => a + (e.priceMain ?? 0), 0);
   $("cal-sub").textContent = `${c.events.length} payment${c.events.length === 1 ? "" : "s"} · ${mainMoney(total)}`;
-  const startDow = (first.getDay() + 6) % 7, days = new Date(c.y, c.m, 0).getDate();
+  // Fixed grid: day 1 is always top-left, 7 per row, so days never shift between months;
+  // 29-31 just fill the last row. Each cell shows its own weekday instead of a header row.
+  const days = new Date(c.y, c.m, 0).getDate();
   const [ty, tm, td] = S.today.split("-").map(Number);
   const byDay = {};
   for (const e of c.events) (byDay[e.day] ||= []).push(e);
-  let html = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => `<div class="dow">${d}</div>`).join("");
-  for (let i = 0; i < Math.ceil((startDow + days) / 7) * 7; i++) {
-    const d = i - startDow + 1;
-    if (d < 1 || d > days) { html += `<div class="day out"></div>`; continue; }
-    const evs = (byDay[d] || []).map(e => `<span class="ev ${e.trial ? "trial" : ""}" style="background:${color(e.name)}" title="${esc(e.name)} ${esc(money(e.price, e.cur))}${e.trial ? " (trial ends)" : ""}" onclick="openEdit(${e.id})">${evIcon(e)}<span class="nm">${esc(e.name)}</span></span>`).join("");
-    html += `<div class="day ${c.y === ty && c.m === tm && d === td ? "now" : ""}"><span class="n">${d}</span>${evs}</div>`;
+  let html = "";
+  for (let i = 0; i < 35; i++) {
+    const d = i + 1;
+    if (d > days) { html += `<div class="day out"></div>`; continue; }
+    const dow = new Date(c.y, c.m - 1, d).toLocaleDateString(undefined, { weekday: "short" });
+    const we = [0, 6].includes(new Date(c.y, c.m - 1, d).getDay());
+    const l = byDay[d] || [];
+    let evs = "";
+    if (l.length === 1) evs = `<div class="evs one">${evTile(l[0])}<span class="evn" title="${esc(l[0].name)}" onclick="openEdit(${Number(l[0].id)})">${esc(l[0].name)}</span></div>`;
+    else if (l.length > 1 && l.length <= 4) evs = `<div class="evs">${l.map(evTile).join("")}</div>`;
+    else if (l.length > 4) evs = `<div class="evs">${l.slice(0, 3).map(evTile).join("")}<span class="tile more" title="${l.length - 3} more" onclick="calMore(${d}, event)">+${l.length - 3}</span></div>`;
+    html += `<div class="day ${c.y === ty && c.m === tm && d === td ? "now" : ""}"><span class="n">${d}</span><span class="wd ${we ? "we" : ""}">${esc(dow)}</span>${evs}</div>`;
   }
+  calDays = byDay;
   $("cal").innerHTML = html;
 }
 
@@ -871,8 +927,9 @@ function paypalMap(head, al, sample) {
 }
 const isoOk = d => /^\d{4}-\d{2}-\d{2}/.test(String(d || ""));
 const fmtD = d => isoOk(d) ? fmtDate(String(d).slice(0, 10)) : "–";
-const candSub = c => ({ id: 0, name: c.name, price: c.price, cur: c.cur, every: c.every, unit: c.unit, start: String(c.start || c.first || c.next).slice(0, 10), category: c.category || "",
-  payment: c.payment || "", remind: S.settings.remind, url: c.url || "", notes: "", active: true, trial: !!c.trial });
+const candSub = c => ({ id: 0, name: c.name, price: c.price, cur: c.cur, every: c.every, unit: c.unit, start: String(c.start || c.anchor || c.first || c.next).slice(0, 10), category: c.category || "",
+  payment: c.payment || "", remind: S.settings.remind, url: c.url || "", notes: "", active: true, trial: !!c.trial,
+  icon: c.icon || "", first: isoOk(c.first) ? String(c.first).slice(0, 10) : "" });
 
 function scanRecv(msg) {
   const t = msg.type;
@@ -964,7 +1021,7 @@ $("sc-list").addEventListener("click", e => {
   const b = e.target.closest("button[data-act]"); if (!b) return;
   const key = b.closest(".cand")?.dataset.key, c = SC.cands.find(x => x.key === key); if (!c) return;
   const a = b.dataset.act;
-  if (a === "add") { if (isoOk(c.start || c.first || c.next)) send({ cmd: "save", sub: candSub(c) }); else openEdit(0, candSub(c)); }
+  if (a === "add") { if (isoOk(c.start || c.anchor || c.first || c.next)) send({ cmd: "save", sub: candSub(c) }); else openEdit(0, candSub(c)); }
   else if (a === "edit") openEdit(0, candSub(c));
   else if (a === "update") openEdit(c.subId, { price: c.price, cur: c.cur });
   else if (a === "skip") send({ cmd: "scan_skip", key: c.key });

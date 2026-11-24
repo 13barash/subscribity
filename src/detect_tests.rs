@@ -241,7 +241,7 @@ fn detect_group_evidence_first_and_end() {
     // Three monthly charges of similar amounts are evidence on their own.
     let reg = [ch("gym", "2026-03-05", 50.0, r), ch("gym", "2026-04-05", 52.0, r), ch("gym", "2026-05-05", 50.0, r)];
     let g = group(&reg, day("2026-05-20"));
-    assert_eq!((g[0].first, g[0].next, g[0].count), (day("2026-03-05"), day("2026-06-05"), 3));
+    assert_eq!((g[0].first, g[0].anchor, g[0].next, g[0].count), (day("2026-03-05"), day("2026-03-05"), day("2026-06-05"), 3));
     // Plan change (Pro → Max → Ultra within days): name and price from the last, first payment
     // where the current schedule starts, never in the future; latest payment method wins.
     let k = KNOWN | r;
@@ -251,7 +251,7 @@ fn detect_group_evidence_first_and_end() {
     b.name = "Claude Ultra".into();
     b.method = "Mastercard 0000".into();
     let g = group(&[a, b], day("2026-11-24"));
-    assert_eq!((g[0].name.as_str(), g[0].price, g[0].first, g[0].next), ("Claude Ultra", 579.0, day("2026-11-08"), day("2026-12-08")));
+    assert_eq!((g[0].name.as_str(), g[0].price, g[0].first, g[0].anchor, g[0].next), ("Claude Ultra", 579.0, day("2026-11-08"), day("2026-11-08"), day("2026-12-08")));
     let j = g[0].to_json();
     assert_eq!((j["first"].as_str(), j["start"].as_str(), j["payment"].as_str()), (Some("2026-11-08"), Some("2026-11-08"), Some("Mastercard 0000")));
     // A receipt's renewal date just passed (within the grace) rolls forward; it is the first payment.
@@ -259,7 +259,21 @@ fn detect_group_evidence_first_and_end() {
     n.renews = Some(day("2026-11-09"));
     n.period = Some((1, 3));
     let g = group(&[n], day("2026-11-24"));
-    assert_eq!((g[0].first, g[0].next), (day("2026-11-09"), day("2027-11-09")));
+    assert_eq!((g[0].first, g[0].anchor, g[0].next), (day("2026-11-09"), day("2026-11-09"), day("2027-11-09")));
+    // Apple charges the day before its renew day: first = real first charge, anchor = renew day.
+    let mut i1 = ch("icloud", "2026-10-15", 3.9, k | RECUR);
+    i1.renews = Some(day("2026-11-16"));
+    let mut i2 = ch("icloud", "2026-11-16", 3.9, k | RECUR);
+    i2.renews = Some(day("2026-12-16"));
+    let g = group(&[i1.clone(), i2.clone()], day("2026-11-24"));
+    assert_eq!((g[0].first, g[0].anchor, g[0].next), (day("2026-10-15"), day("2026-10-16"), day("2026-12-16")));
+    let j = g[0].to_json();
+    assert_eq!((j["first"].as_str(), j["anchor"].as_str(), j["start"].as_str()), (Some("2026-10-15"), Some("2026-10-16"), Some("2026-10-16")));
+    // 4 days off the point is another schedule: first = anchor = the matched charge.
+    i1.date = day("2026-10-12");
+    i1.renews = None;
+    let g = group(&[i1, i2], day("2026-11-24"));
+    assert_eq!((g[0].first, g[0].anchor), (day("2026-11-16"), day("2026-11-16")));
     // A cancellation notice after the last charge drops it; a charge after the notice keeps it.
     let mut end = ch("canva", "2026-09-10", 0.0, ENDED | KNOWN);
     end.cur = "XXX".into();

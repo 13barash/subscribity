@@ -7,7 +7,8 @@
 //! - `h  key name date price cur every:unit trial renews site category flags src`: one charge
 //!   (24 newest per service, 2000 overall); candidates are regrouped from these
 //! - `c  key name price cur every unit last next category site score count src trial first method
-//!   icon`: the last grouping, used only when there are no `h` lines (trailing fields optional)
+//!   icon anchor`: the last grouping, used only when there are no `h` lines (trailing fields
+//!   optional; `anchor` v0.3.2, missing = `first`)
 //! - `a  key icon site`: App Store lookup result for an App Store item (v0.3.0; empty = none found)
 //!
 //! Unknown line types and extra trailing fields are ignored, so newer versions can add them.
@@ -150,9 +151,10 @@ fn parse_charge(f: &[&str]) -> Option<Charge> {
 
 fn candidate_line(c: &Candidate) -> String {
     format!(
-        "c\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        "c\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         esc(&c.key), esc(&c.name), c.price, c.cur, c.every, c.unit, iso(c.last), iso(c.next),
-        esc(&c.category), esc(&c.site), c.score, c.count, c.src, c.trial as u8, iso(c.first), esc(&c.method), esc(&c.icon)
+        esc(&c.category), esc(&c.site), c.score, c.count, c.src, c.trial as u8, iso(c.first), esc(&c.method), esc(&c.icon),
+        iso(c.anchor)
     )
 }
 
@@ -160,6 +162,7 @@ fn parse_candidate(f: &[&str]) -> Option<Candidate> {
     if f.len() < 15 {
         return None;
     }
+    let first = f.get(15).and_then(|d| parse_iso(d)).or(parse_iso(f[7]))?;
     Some(Candidate {
         key: unesc(f[1]),
         name: unesc(f[2]),
@@ -176,9 +179,11 @@ fn parse_candidate(f: &[&str]) -> Option<Candidate> {
         src: f[13].parse().unwrap_or(0),
         trial: f[14] == "1",
         // Optional trailing fields (v0.3.0): first payment, payment method. Older lines: last charge.
-        first: f.get(15).and_then(|d| parse_iso(d)).or(parse_iso(f[7]))?,
+        first,
         method: f.get(16).map_or(String::new(), |m| unesc(m)),
         icon: f.get(17).map_or(String::new(), |m| unesc(m)),
+        // v0.3.2: schedule anchor; older lines: = first.
+        anchor: f.get(18).and_then(|d| parse_iso(d)).unwrap_or(first),
         ..Default::default()
     })
 }
@@ -329,6 +334,21 @@ mod tests {
         let g = ScanFile::load(&dir);
         assert_eq!((g.h.len(), g.u.map(|u| u.last_uid)), (0, Some(5)));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn candidate_line_anchor_roundtrip_and_old_line() {
+        let d = days_from_civil(2026, 10, 15);
+        let c = Candidate { key: "icloud".into(), name: "iCloud+".into(), cur: "ILS".into(), price: 3.9, every: 1, unit: 2,
+            first: d, anchor: d + 1, last: d + 32, next: d + 62, icon: "https://x.mzstatic.com/a.png".into(), ..Default::default() };
+        let line = candidate_line(&c);
+        let f: Vec<&str> = line.trim_end().split('\t').collect();
+        let back = parse_candidate(&f).unwrap();
+        assert_eq!((back.first, back.anchor, back.icon.as_str()), (d, d + 1, "https://x.mzstatic.com/a.png"));
+        // A v0.3.1 line (18 fields, no anchor): anchor = first.
+        let old = f[..18].to_vec();
+        let back = parse_candidate(&old).unwrap();
+        assert_eq!((back.first, back.anchor), (d, d));
     }
 
     #[test]

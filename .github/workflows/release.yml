@@ -42,11 +42,16 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/subscribity.exe dist/Subscribity.exe
           (Get-FileHash dist/Subscribity.exe -Algorithm SHA256).Hash.ToLower() | Set-Content -NoNewline -Encoding ascii dist/Subscribity.exe.sha256
+          # Ready-to-use folder: unzip anywhere, run Subscribity\Subscribity.exe; data is saved inside it.
+          New-Item -ItemType Directory zip/Subscribity | Out-Null
+          Copy-Item dist/Subscribity.exe zip/Subscribity/Subscribity.exe
+          Compress-Archive -Path zip/Subscribity -DestinationPath dist/Subscribity.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/Subscribity.zip
             dist/Subscribity.exe
             dist/Subscribity.exe.sha256
           generate_release_notes: true

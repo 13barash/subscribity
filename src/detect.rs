@@ -757,9 +757,10 @@ pub struct Candidate {
     pub cur: String,
     pub every: u32,
     pub unit: u8,
-    pub first: i32, // first payment on the current schedule (never in the future): Sub.start when added
-    pub last: i32,  // last charge
-    pub next: i32,  // expected next charge (Sub.start instead of `first` while a trial runs)
+    pub first: i32,  // first real charge of the current schedule (never in the future): Sub.first
+    pub anchor: i32, // schedule point `first` belongs to (Apple renew day): Sub.start when added
+    pub last: i32,   // last charge
+    pub next: i32,   // expected next charge (Sub.start instead of `anchor` while a trial runs)
     pub category: String,
     pub site: String,
     pub score: u8,
@@ -776,14 +777,14 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// `start` is what Add should store as the subscription's first payment: `first`, or `next`
+    /// `start` is what Add should store as the subscription's schedule start: `anchor`, or `next`
     /// during a free trial (the first charge is still ahead).
     pub fn to_json(&self) -> Value {
         let level = if self.score >= 75 { "high" } else if self.score >= 55 { "medium" } else { "low" };
-        let start = if self.trial { self.next } else { self.first };
+        let start = if self.trial { self.next } else { self.anchor };
         json!({
             "key": self.key, "name": self.name, "price": round2(self.price), "cur": self.cur,
-            "every": self.every, "unit": self.unit, "first": data::iso(self.first), "start": data::iso(start),
+            "every": self.every, "unit": self.unit, "first": data::iso(self.first), "anchor": data::iso(self.anchor), "start": data::iso(start),
             "last": data::iso(self.last), "next": data::iso(self.next), "payment": self.method,
             "category": self.category, "url": self.site, "score": self.score, "level": level,
             "count": self.count, "src": self.src, "trial": self.trial, "tracked": self.tracked,
@@ -807,12 +808,14 @@ fn back(d: i32, k: i32, every: u32, unit: u8) -> i32 {
     }
 }
 
-/// The earliest point of the schedule that ends in `next` with a charge within 3 days of it, so
-/// `Sub { start: first }` reproduces `next`; a plan change (charge off the schedule) starts anew.
-/// No fitting charge: the last charge. Never after `today`.
-fn first_on_schedule(m: &[Charge], next: i32, every: u32, unit: u8, today: i32) -> i32 {
-    let (earliest, last) = (m[0].date, m[m.len() - 1].date);
-    let mut first = None;
+/// `(anchor, first)`. `anchor`: the earliest point of the schedule that ends in `next` with a
+/// charge within 3 days of it, so `Sub { start: anchor }` reproduces `next`; a plan change (charge
+/// off the schedule) starts anew. `first`: the earliest real charge (no trial, notice or other
+/// price) within 3 days of the anchor, e.g. Apple charges the day before its renew day; matched
+/// only by a notice's renewal date → the anchor. No fitting point: both the last charge. Never after `today`.
+fn first_on_schedule(m: &[Charge], next: i32, every: u32, unit: u8, today: i32) -> (i32, i32) {
+    let (earliest, last) = (m[0].date, &m[m.len() - 1]);
+    let mut anchor = None;
     for k in 1..=400 {
         let pt = back(next, k, every, unit);
         if pt < earliest - 3 {
@@ -820,10 +823,19 @@ fn first_on_schedule(m: &[Charge], next: i32, every: u32, unit: u8, today: i32) 
         }
         // A past renewal date from a notice counts as a charge on that day; a trial start does not.
         if m.iter().any(|c| (!c.trial && (c.date - pt).abs() <= 3) || c.renews.is_some_and(|r| r > c.date && r <= today && (r - pt).abs() <= 3)) {
-            first = Some(pt);
+            anchor = Some(pt);
         }
     }
-    first.filter(|&f| f <= today).unwrap_or(last.min(today))
+    let Some(a) = anchor.filter(|&a| a <= today) else {
+        let d = last.date.min(today);
+        return (d, d);
+    };
+    let first = m
+        .iter()
+        .filter(|c| !c.trial && c.score_parts & (NOTICE | ENDED) == 0 && c.date <= today && (c.date - a).abs() <= 3 && same_price(c, last))
+        .map(|c| c.date)
+        .min();
+    (a, first.unwrap_or(a))
 }
 
 /// No charge came for the expected one (`due`: the promised renewal date, else the last charge
@@ -917,12 +929,12 @@ pub fn group(charges: &[Charge], today: i32) -> Vec<Candidate> {
             // A renewal date from an old notice: roll it forward on the same schedule.
             next = data::next_due(&Sub { start: next, every, unit, ..Default::default() }, today);
         }
-        let first = first_on_schedule(&m, next, every, unit, today);
+        let (point, first) = first_on_schedule(&m, next, every, unit, today);
         let best = m.iter().rev().find(|c| c.score_parts & KNOWN != 0).unwrap_or(last);
         let method = m.iter().rev().find(|c| !c.method.is_empty()).map_or(String::new(), |c| c.method.clone());
         out.push(Candidate {
             key: key.to_string(), name: best.name.clone(), price: round2(last.price), cur: last.cur.clone(), every, unit,
-            first, last: last.date, next, category: best.category.clone(), site: best.site.clone(), score: score.min(100) as u8,
+            first, anchor: point, last: last.date, next, category: best.category.clone(), site: best.site.clone(), score: score.min(100) as u8,
             count: m.len() as u32, src: last.src, trial, method, apple: flags & APPLE != 0, ..Default::default()
         });
     }

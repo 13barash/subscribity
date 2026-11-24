@@ -38,10 +38,10 @@ a few days before something renews, so you have time to cancel what you no longe
 ## Download and install
 
 1. Go to the [latest release](https://github.com/13barash/subscribity/releases/latest) and
-   download **`Subscribity.exe`**.
-2. Make a new folder for it, for example `Documents\Subscribity`, and move the file there.
-   Your subscriptions are saved in this same folder.
-3. Double-click `Subscribity.exe`. The window opens so you can add your first subscriptions.
+   download **`Subscribity.zip`**.
+2. Unzip it where you want to keep it, for example in `Documents`. You get a `Subscribity`
+   folder; your subscriptions are saved in this same folder.
+3. Open the folder and double-click `Subscribity.exe`. The window opens so you can add your first subscriptions.
 
 That's it. Subscribity adds itself to the Start menu and starts with Windows (you can turn
 that off in Settings). From now on, click its icon next to the clock to open it.

@@ -11,6 +11,7 @@
 #![allow(non_snake_case, static_mut_refs, clippy::missing_safety_doc)]
 
 mod data;
+mod icons;
 mod detect;
 mod imap;
 mod mime;
@@ -58,6 +59,7 @@ const WM_OPENPAGE: u32 = 0x8000 + 7; // tray -> window: 1 settings, 2 add, 1000+
 const WM_UPDATE: u32 = 0x8000 + 8;
 const WM_INSTALLED: u32 = 0x8000 + 9;
 const WM_SCAN: u32 = 0x8000 + 10; // scan thread -> window: wParam kind, lParam boxed result
+const WM_ICONS: u32 = 0x8000 + 11; // --icons helper -> tray: new icons cached
 const TIMER_TICK: usize = 1;
 
 const M_OPEN: usize = 1;
@@ -370,6 +372,68 @@ fn housekeeping() {
     a.store.backup_if_due(a.today);
 }
 
+/// icons.rs cache key: App Store artwork URL, else the registrable domain of the site; "" = none.
+fn icon_key(s: &Sub) -> String {
+    if !s.icon.is_empty() {
+        return s.icon.clone();
+    }
+    let u = s.url.trim();
+    let u = u.split_once("://").map_or(u, |x| x.1);
+    let host = u.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit('@').next().unwrap_or("").split(':').next().unwrap_or("");
+    if host.contains('.') { services::registrable(host) } else { String::new() }
+}
+
+/// Keys of every subscription, rows shown in the popup first, deduped, non-empty.
+fn icon_keys(st: &Store) -> Vec<String> {
+    let t = today();
+    let mut soon: Vec<(i32, String)> = st.subs.iter().filter(|s| s.active).map(|s| (next_due(s, t), icon_key(s))).collect();
+    soon.sort_by_key(|x| x.0);
+    let mut keys: Vec<String> = soon.into_iter().map(|x| x.1).collect();
+    keys.extend(st.subs.iter().map(icon_key));
+    let mut seen = HashSet::new();
+    keys.retain(|k| !k.is_empty() && seen.insert(k.clone()));
+    keys
+}
+
+/// Popup opened: start the icon helper if something is missing (at most every 10 minutes).
+fn maybe_fetch_icons() {
+    static mut LAST: Option<std::time::Instant> = None;
+    if std::env::var_os("SUBSCRIBITY_NO_INTEGRATION").is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    unsafe {
+        #[allow(static_mut_refs)]
+        if LAST.is_some_and(|t| t.elapsed().as_secs() < 600) {
+            return;
+        }
+        if icons::pending(&data_dir(), &icon_keys(&app().store)) {
+            LAST = Some(std::time::Instant::now());
+            shell_open(&system::exe().to_string_lossy(), Some("--icons"));
+        }
+    }
+}
+
+/// `--icons`: fetch missing icons, then tell the tray.
+fn icons_helper() {
+    unsafe {
+        CreateMutexW(null(), 1, w(icons::MUTEX).as_ptr());
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            return;
+        }
+    }
+    let dir = data_dir();
+    let store = Store::load(dir.clone());
+    if icons::fetch_missing(&dir, &icon_keys(&store)) > 0 {
+        unsafe {
+            let tray = FindWindowW(w("SubscribityHost").as_ptr(), null());
+            if !tray.is_null() && scan::same_exe(tray) {
+                PostMessageW(tray, WM_ICONS, 0, 0);
+            }
+        }
+    }
+}
+
 fn popup_data() -> popup::Data {
     let a = app();
     let t = today();
@@ -387,7 +451,7 @@ fn popup_data() -> popup::Data {
             let trial = s.in_trial(t);
             let when = if trial { format!("Trial ends {}", due_text(left)) } else { format!("{} · {}", fmt_date(d), due_text(left)) };
             let tone = if trial { 3 } else if left == 0 { 2 } else if left <= s.remind { 1 } else { 0 };
-            (d, popup::Item { id: s.id, name: s.name.clone(), when, price: money(s.price, &s.cur), tone })
+            (d, popup::Item { id: s.id, name: s.name.clone(), when, price: money(s.price, &s.cur), tone, icon: icon_key(s) })
         })
         .filter(|(d, _)| d - t <= 30)
         .collect();
@@ -846,6 +910,7 @@ fn state_json() -> Value {
                 "every": s.every.max(1), "unit": s.unit, "next": iso(d), "left": d - t,
                 "category": s.category, "payment": s.payment, "remind": s.remind,
                 "active": s.active, "notes": s.notes, "url": s.url,
+                "icon": s.icon, "first": if s.first > 0 { iso(s.first) } else { String::new() },
                 "trial": s.trial, "inTrial": s.in_trial(t),
                 "history": s.history.iter().map(|(d, p)| json!({"date": iso(*d), "price": p})).collect::<Vec<_>>(),
                 "monthly": monthly(s),
@@ -938,6 +1003,9 @@ fn sub_from_json(s: &Value, id: u32, default_cur: &str, default_remind: i32) -> 
         url: str_of(s, "url").chars().take(200).collect(),
         trial: s.get("trial").and_then(|x| x.as_bool()).unwrap_or(false),
         history: Vec::new(),
+        icon: Some(str_of(s, "icon")).filter(|u| scan::appstore::is_artwork(u)).unwrap_or_default(),
+        // A first charge in the future is no first charge.
+        first: parse_iso(&str_of(s, "first")).filter(|&f| f > 0 && f <= today()).unwrap_or(0),
     })
 }
 
@@ -971,6 +1039,13 @@ fn handle_ipc(body: &str) {
                     sub.start = old.start;
                 }
                 sub.history = old.history.clone();
+                // The form resends both; a missing `first` keeps the stored one, "icon" = "" clears it.
+                if msg["sub"].get("first").is_none() {
+                    sub.first = old.first;
+                }
+                if msg["sub"].get("icon").is_none() {
+                    sub.icon = old.icon.clone();
+                }
                 if sub.cur != old.cur {
                     sub.history.clear();
                 } else if (sub.price - old.price).abs() > 0.004 {
@@ -1193,6 +1268,7 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                 0x202 /* WM_LBUTTONUP */ => {
                     check_reminders(false);
                     popup::toggle(a.hinst, a.scale, (a.host, 1), popup_data, on_popup_action);
+                    maybe_fetch_icons();
                 }
                 0x405 /* NIN_BALLOONUSERCLICK */ => open_window(a.notice_page),
                 0x205 /* WM_RBUTTONUP */ => tray_menu(),
@@ -1202,6 +1278,10 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
         }
         WM_OPEN => {
             open_window(0);
+            0
+        }
+        WM_ICONS => {
+            popup::reload_icons();
             0
         }
         WM_RELOAD => {
@@ -1291,6 +1371,10 @@ fn main() {
     }
     if has("--scan") {
         scan::headless(); // weekly auto-scan: no window, own mutex
+        return;
+    }
+    if has("--icons") {
+        icons_helper(); // icon fetch: no window, own mutex
         return;
     }
     if has("--scan-dump") {

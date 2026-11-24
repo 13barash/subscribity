@@ -52,6 +52,8 @@ pub struct Sub {
     pub url: String,
     pub trial: bool,               // free trial: the first charge is on `start`
     pub history: Vec<(i32, f64)>,  // (day the price changed, price before the change)
+    pub icon: String,              // App Store artwork URL (https mzstatic, <= 300 chars), "" if none
+    pub first: i32,                // real first charge (can precede `start`), 0 = unknown
 }
 
 impl Sub {
@@ -410,6 +412,8 @@ impl Store {
                     url: f.get(12).map(|u| unesc(u)).unwrap_or_default(),
                     trial: f.get(13).is_some_and(|t| *t == "1"),
                     history: f.get(14).map(|h| parse_history(h)).unwrap_or_default(),
+                    icon: f.get(15).map(|u| unesc(u)).filter(|u| u.len() <= 300).unwrap_or_default(),
+                    first: f.get(16).and_then(|d| parse_iso(d)).unwrap_or(0),
                 });
             }
         }
@@ -436,14 +440,15 @@ impl Store {
     }
 
     pub fn save_subs(&self) {
-        let mut t = String::from("id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\turl\ttrial\tprice_history\n");
+        let mut t = String::from("id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\turl\ttrial\tprice_history\ticon\tfirst_charge\n");
         for s in &self.subs {
             let hist: Vec<String> = s.history.iter().map(|(d, p)| format!("{}:{}", iso(*d), p)).collect();
             t.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 s.id, esc(&s.name), s.price, s.cur, s.every, s.unit, iso(s.start),
                 esc(&s.category), esc(&s.payment), s.remind, s.active as u8, esc(&s.notes),
-                esc(&s.url), s.trial as u8, hist.join(";")
+                esc(&s.url), s.trial as u8, hist.join(";"), esc(&s.icon),
+                if s.first > 0 { iso(s.first) } else { String::new() }
             ));
         }
         write_atomic(&self.dir.join(SUBS_FILE), &t);
@@ -744,6 +749,24 @@ mod tests {
         let back = Store::load(dir.clone());
         let s = &back.subs[0];
         assert_eq!((s.name.as_str(), s.notes.as_str(), s.trial, s.history.clone()), ("A\tB", "line1\nline2", true, vec![(19990, 7.5)]));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn subs_icon_first_roundtrip_and_v010_load() {
+        let dir = temp_dir("subs-icon");
+        let mut st = Store::load(dir.clone());
+        let (d, f) = (days_from_civil(2026, 10, 16), days_from_civil(2026, 10, 15));
+        st.subs.push(Sub { id: 1, name: "iCloud".into(), every: 1, unit: 2, start: d, first: f, icon: "https://is1.mzstatic.com/a.png".into(), active: true, ..Default::default() });
+        st.subs.push(Sub { id: 2, name: "Plain".into(), every: 1, unit: 2, start: d, active: true, ..Default::default() });
+        st.save_subs();
+        let back = Store::load(dir.clone());
+        assert_eq!((back.subs[0].first, back.subs[0].icon.as_str()), (f, "https://is1.mzstatic.com/a.png"));
+        assert_eq!((back.subs[1].first, back.subs[1].icon.as_str()), (0, ""));
+        // v0.1.0: 12 columns.
+        fs::write(dir.join(SUBS_FILE), "id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\n3\tOld\t5\tUSD\t1\t2\t2026-10-16\t\t\t3\t1\t\n").unwrap();
+        let old = Store::load(dir.clone());
+        assert_eq!((old.subs.len(), old.subs[0].name.as_str(), old.subs[0].start, old.subs[0].first, old.subs[0].icon.as_str()), (1, "Old", d, 0, ""));
         let _ = fs::remove_dir_all(dir);
     }
 

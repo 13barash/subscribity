@@ -19,8 +19,9 @@ pub mod store;
 #[path = "scan_mail.rs"]
 mod mail;
 #[path = "appstore.rs"]
-mod appstore;
+pub(crate) mod appstore;
 pub use mail::{dump, headless, test_connect};
+pub(crate) use mail::same_exe;
 use mail::{apply, host_for, scan_mail, test_login, Outcome, ScanLock};
 use store::{Login, ScanFile};
 
@@ -218,7 +219,10 @@ pub fn handle_ipc(cmd: &str, msg: &Value) -> bool {
             }
             send_js(&state_json());
         }
-        "scan_list" => send_list(),
+        "scan_list" => {
+            backfill_subs();
+            send_list()
+        }
         "paypal_import" => {
             let rows: Vec<paypal::PaypalRow> = msg
                 .get("rows")
@@ -291,6 +295,30 @@ fn start(months: u32) {
     send_js(&state_json());
 }
 
+/// Saved subscriptions that match a candidate (`subId`) take its App Store icon and real first
+/// charge when they have none (`first` only if the sub's schedule start is that candidate's
+/// anchor, within 3 days). Never overwrites.
+fn backfill_subs() {
+    let a = app();
+    let found: Vec<(u32, String, i32, i32)> = file().c.iter().filter(|c| c.sub_id != 0).map(|c| (c.sub_id, c.icon.clone(), c.first, c.anchor)).collect();
+    let mut changed = false;
+    for (id, icon, first, anchor) in found {
+        let Some(s) = a.store.subs.iter_mut().find(|s| s.id == id) else { continue };
+        if s.icon.is_empty() && !icon.is_empty() {
+            s.icon = icon;
+            changed = true;
+        }
+        if s.first == 0 && first > 0 && first <= today() && (s.start - anchor).abs() <= 3 {
+            s.first = first;
+            changed = true;
+        }
+    }
+    if changed {
+        a.store.save_subs();
+        send_js(&state_json());
+    }
+}
+
 /// After a window scan: App Store lookups (icon, developer site) for App Store items without a
 /// site, on a thread; results come back as K_APPS and are cached in scan.tsv.
 fn look_up_apps() {
@@ -330,6 +358,7 @@ pub fn on_message(kind: usize, lp: isize) {
             let ok = o.error.is_none();
             if !locked {
                 edit(|f| apply(f, o));
+                backfill_subs();
                 look_up_apps();
             }
             if ok {
@@ -353,6 +382,7 @@ pub fn on_message(kind: usize, lp: isize) {
             let found = *unsafe { Box::from_raw(lp as *mut Vec<(String, (String, String))>) };
             if !found.is_empty() {
                 edit(|f| f.apps.extend(found));
+                backfill_subs();
                 send_list();
             }
         }
