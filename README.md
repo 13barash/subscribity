@@ -1,93 +1,103 @@
 # Subscribity
 
-A tiny subscription tracker that lives in the Windows tray.
+**Know what your subscriptions cost, and never get surprised by a renewal again.**
+
+Subscribity is a small, free app for Windows that keeps track of everything you pay for
+regularly: streaming, music, cloud storage, phone plans, gym, software, anything. It sits
+quietly next to the clock, tells you what you spend each month and each year, and warns you
+a few days before something renews, so you have time to cancel what you no longer use.
 
 ![Subscribity](screenshot.png)
 
-Subscribity keeps a list of your subscriptions, shows what they cost per month and per year,
-and reminds you before each one renews. It sits in the notification area using about
-**2 MB of RAM**, and its window only exists while it is open.
+## What it does for you
 
-## Features
+- **See your real total.** Monthly and yearly cost of all your subscriptions in one place,
+  even when they are in different currencies (they are converted to your own currency).
+- **Get reminded before you pay.** A Windows notification a few days before each renewal.
+  You choose how many days, per subscription.
+- **Catch free trials before they turn into charges.** Mark a subscription as a free trial
+  and Subscribity reminds you before the trial ends.
+- **Stay on budget.** Set a monthly budget, watch the meter fill up, and get a warning if you
+  go over it.
+- **Know what you paid.** A payment history is kept automatically every time a subscription
+  renews, and price changes are remembered, so you can see when something got more expensive.
+- **Upcoming payments at a glance.** Click the tray icon for a quick look at what is due next,
+  or open the full window for the calendar, statistics and settings.
+- **Add things fast.** Ready-made templates for popular services, or type your own.
+- **Bring your list with you.** Import from a CSV or JSON file (for example an export from
+  another subscription tracker) and export your list to CSV at any time.
+- **Your data is safe.** Automatic weekly backups (the last 30 days are kept) that you can
+  restore with one click.
+- **Updates itself.** When a new version comes out, Subscribity offers to install it for you.
 
-- Subscriptions with price, currency, billing cycle (every N days, weeks, months or years),
-  next payment date, category, payment method, website icon and notes
-- Monthly and yearly totals, with every currency converted to your main currency
-  (exchange rates refreshed once a day)
-- Calendar of upcoming payments
-- Statistics: cost by category and by payment method, share of total, next 30 days
-- Windows notifications before a renewal (you choose how many days before, per subscription)
-- Tray icon with a `+N` badge for renewals you have not looked at yet
-- Search, filters and sorting
-- Light and dark theme (follows Windows by default)
-- Starts with Windows (can be turned off)
-- Export to CSV
+## Download and install
 
-## How it stays light
+1. Go to the [latest release](https://github.com/13barash/subscribity/releases/latest) and
+   download **`Subscribity.exe`**.
+2. Make a new folder for it, for example `Documents\Subscribity`, and move the file there.
+   Your subscriptions are saved in this same folder.
+3. Double-click `Subscribity.exe`. The window opens so you can add your first subscriptions.
 
-| | RAM | Disk |
-|---|---|---|
-| In the tray (window closed) | ~2 MB | 0.6 MB exe |
-| Window open | +~180 MB (WebView2), freed on close | — |
+That's it. Subscribity adds itself to the Start menu and starts with Windows (you can turn
+that off in Settings). From now on, click its icon next to the clock to open it.
 
-- The tray part is plain Win32 written in Rust, with no runtime.
-- The window is drawn by the WebView2 runtime that is part of Windows 11. It runs in a
-  separate short-lived process, so closing the window gives all of its memory back.
-- Data is stored as small text files next to the exe: `subscriptions.tsv`, `settings.ini`,
-  `rates.tsv` and `state.tsv`. Copy the folder to back it up.
+**Can't see the icon?** Windows sometimes hides new tray icons. Click the small **^** arrow
+next to the clock, then drag the Subscribity icon onto the taskbar to keep it visible.
 
-## Install
+### "Windows protected your PC"
 
-1. Download `Subscribity.exe` from the releases page and put it in a folder of its own
-   (for example `C:\Users\<you>\Subscribity`). Your data is saved in that same folder.
-2. Run it. The window opens the first time; after that, click the tray icon.
+Subscribity is a new app from an independent developer, so Windows SmartScreen may show this
+warning the first time. Click **More info**, then **Run anyway**. This happens only once.
 
-Needs Windows 10 or 11 with the Microsoft Edge WebView2 Runtime (already installed on Windows 11).
+### Requirements
 
-## Updates
+Windows 10 or Windows 11. On Windows 10, the free Microsoft Edge WebView2 Runtime is needed
+(most PCs already have it; if the window doesn't open, install it from
+[Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/)).
 
-Subscribity checks GitHub Releases once a week (or once a month, or never; see Settings).
-When a newer version exists you get a Windows notification and an **Update now** button in
-the app. The update is downloaded, its SHA-256 is checked against the published checksum,
-the exe is swapped in place and the app restarts. Your data is not touched.
+## Light on your PC
 
-## Releasing a new version
+Subscribity is built to stay out of your way:
 
-1. Bump `version` in `Cargo.toml` (for example `0.2.0`) and commit.
-2. Tag and push:
+| | Memory used |
+|---|---|
+| Waiting in the tray | about 2 MB |
+| While the window is open | about 70–90 MB, all given back when you close it |
 
-   ```powershell
-   git tag v0.2.0
-   git push origin main v0.2.0
-   ```
+The whole app is a single file under 1 MB. No installer, no background services.
 
-3. The **Release** GitHub Action tests and builds the app and publishes a release with
-   `Subscribity.exe` and `Subscribity.exe.sha256`. Installed apps pick it up at their next check,
-   or right away with **Settings → Updates → Check now**.
+## Updating
 
-## Build from source
+Subscribity checks for a new version once a week (you can change this to monthly or off in
+**Settings → Updates**). When one is available you get a notification; click **Update now**
+and the app updates and restarts by itself. Your subscriptions and settings are kept.
 
-```powershell
-# Rust (https://rustup.rs) and the MSVC build tools (Visual Studio Build Tools, C++ workload)
-cargo build --release
-```
+## Backups and moving to a new PC
 
-The exe is written to `target\x86_64-pc-windows-msvc\release\subscribity.exe`.
+- Backups are made automatically every week and kept for 30 days. Restore one from
+  **Settings → Backups**.
+- To move to another PC, copy the whole Subscribity folder and run `Subscribity.exe` from its
+  new place.
 
-Run the tests with `cargo test --release`.
+## Uninstalling
+
+Open **Settings → Uninstall** in the app, or go to Windows **Settings → Apps → Installed apps**,
+find Subscribity and choose **Uninstall**. You'll be asked whether to keep your data or delete it.
 
 ## Privacy
 
-Subscribity has no account and no telemetry. It makes two kinds of network requests:
+No account, no sign-up, no ads, no tracking. Your list never leaves your computer.
+The app only goes online to:
 
-- exchange rates from `open.er-api.com`, once a day, only if you use more than one currency
-- website icons from `icons.duckduckgo.com`, only for subscriptions where you entered a website
+- get today's exchange rates (only if you use more than one currency),
+- show the logo of a service (only if you entered its website),
+- check for updates.
 
-## Credits
+## Questions or problems?
 
-Inspired by [Wallos](https://github.com/ellite/Wallos), the open-source self-hosted subscription
-tracker. Subscribity is an independent app written from scratch and shares no code with it.
+Open an issue on the [Issues page](https://github.com/13barash/subscribity/issues) and
+describe what happened.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Free and open source under the MIT license. See [LICENSE](LICENSE).

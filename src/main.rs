@@ -1,13 +1,18 @@
 // Subscribity: a tiny Windows tray app for tracking subscriptions.
 //
-// The tray part (icon, badge, reminders, toasts, exchange rates, autostart) is plain Win32
-// and stays resident using ~1-3 MB of RAM. The window UI is HTML rendered by the WebView2
-// runtime that ships with Windows; it is created when the window opens and fully destroyed
-// when it closes, so it costs nothing while hidden.
+// Two processes, one exe:
+// - The tray process (plain Win32, ~2 MB of RAM) keeps the tray icon with its badge, shows the
+//   compact popup, sends renewal and trial reminders, logs payments, refreshes exchange rates,
+//   makes weekly backups and checks for updates.
+// - `--window` opens the full window, drawn by the WebView2 runtime that ships with Windows.
+//   It runs in its own process, which exits when the window closes, so all of its memory is
+//   given back.
 #![windows_subsystem = "windows"]
 #![allow(non_snake_case, static_mut_refs, clippy::missing_safety_doc)]
 
 mod data;
+mod popup;
+mod system;
 mod update;
 
 use data::*;
@@ -21,26 +26,30 @@ use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::Networking::WinHttp::*;
 use windows_sys::Win32::System::LibraryLoader::*;
-use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::SystemInformation::*;
 use windows_sys::Win32::System::Threading::*;
 use windows_sys::Win32::UI::HiDpi::*;
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+use wry::WebViewBuilderExtWindows;
 
-const APP_NAME: &str = "Subscribity";
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const APP_NAME: &str = "Subscribity";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const UI_HTML: &str = include_str!("ui.html");
+
+// Measured: GPU off + a single renderer roughly halves the window's memory (182 -> ~94 MB).
+// The msWebOOUI/msPdfOOUI/msSmartScreenProtection part repeats wry's own defaults.
+const BROWSER_ARGS: &str = "--disable-gpu --in-process-gpu --renderer-process-limit=1 \
+    --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,SpareRendererForSitePerProcess";
 
 const WM_TRAY: u32 = 0x8000 + 1;
 const WM_RATES: u32 = 0x8000 + 2;
 const WM_OPEN: u32 = 0x8000 + 3;
 const WM_IPC: u32 = 0x8000 + 4;
 const WM_RELOAD: u32 = 0x8000 + 5; // window process -> tray: data changed on disk
-const WM_TESTNOTIFY: u32 = 0x8000 + 6; // window process -> tray: show a test toast
-const WM_OPENPAGE: u32 = 0x8000 + 7; // tray -> window process: 1 = settings, 2 = add
-const WM_UPDATE: u32 = 0x8000 + 8; // update check finished
-const WM_INSTALLED: u32 = 0x8000 + 9; // update install finished
+const WM_OPENPAGE: u32 = 0x8000 + 7; // tray -> window: 1 settings, 2 add, 1000+id edit
+const WM_UPDATE: u32 = 0x8000 + 8;
+const WM_INSTALLED: u32 = 0x8000 + 9;
 const TIMER_TICK: usize = 1;
 
 const M_OPEN: usize = 1;
@@ -49,16 +58,16 @@ const M_SETTINGS: usize = 3;
 const M_AUTOSTART: usize = 4;
 const M_EXIT: usize = 5;
 
-// ---------- app state (single UI thread) ----------
+// ---------- app state (single UI thread per process) ----------
 
 struct App {
     hinst: HINSTANCE,
-    host: HWND, // window that receives background results (tray host, or the window itself)
-    tray: HWND, // tray host window (in the window process: the running tray's)
+    host: HWND, // receives background results (tray host, or the window itself)
+    tray: HWND, // the tray host window (in the window process: the running tray's)
     window_mode: bool,
     win: HWND,
     webview: Option<wry::WebView>,
-    pending: Vec<String>, // messages queued until the page is ready
+    pending: Vec<String>,
     page_ready: bool,
     store: Store,
     icon: HICON,
@@ -76,7 +85,7 @@ fn app() -> &'static mut App {
     unsafe { &mut *APP }
 }
 
-fn w(s: &str) -> Vec<u16> {
+pub fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
@@ -99,19 +108,31 @@ fn today() -> i32 {
     days_from_civil(t.wYear as i32, t.wMonth as u32, t.wDay as u32)
 }
 
-fn trim_memory() {
+pub fn trim_memory() {
     unsafe {
         SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
     }
 }
 
 fn data_dir() -> std::path::PathBuf {
-    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_default()
+    system::exe().parent().map(|d| d.to_path_buf()).unwrap_or_default()
 }
 
-fn shell_open(target: &str) {
+fn shell_open(target: &str, args: Option<&str>) {
     unsafe {
-        ShellExecuteW(null_mut(), w("open").as_ptr(), w(target).as_ptr(), null(), null(), SW_SHOWNORMAL);
+        let a = args.map(w);
+        ShellExecuteW(null_mut(), w("open").as_ptr(), w(target).as_ptr(), a.as_ref().map_or(null(), |v| v.as_ptr()), null(), SW_SHOWNORMAL);
+    }
+}
+
+/// DwmSetWindowAttribute, loaded lazily so dwmapi.dll is not a startup import.
+pub fn dwm_set(h: HWND, attr: u32, value: u32) {
+    unsafe {
+        let lib = LoadLibraryW(w("dwmapi.dll").as_ptr());
+        if let Some(f) = GetProcAddress(lib, b"DwmSetWindowAttribute\0".as_ptr()) {
+            let set: unsafe extern "system" fn(HWND, u32, *const c_void, u32) -> i32 = std::mem::transmute(f);
+            set(h, attr, &value as *const u32 as *const c_void, 4);
+        }
     }
 }
 
@@ -174,7 +195,7 @@ fn make_icon(count: i32) -> HICON {
 }
 
 unsafe fn draw_text(dc: HDC, text: &str, x: i32, y: i32, cw: i32, ch: i32, height: i32, color: u32) {
-    let f = CreateFontW(-height, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, ANTIALIASED_QUALITY as u32, 0, w("Segoe UI").as_ptr());
+    let f = CreateFontW(-height, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, ANTIALIASED_QUALITY as u32, 0, w("Segoe UI").as_ptr());
     let of = SelectObject(dc, f);
     SetTextColor(dc, color);
     let mut r = RECT { left: x, top: y, right: x + cw, bottom: y + ch };
@@ -224,7 +245,6 @@ fn set_badge(count: i32, tip: &str) {
 /// Windows shows this as a toast with the notification sound.
 fn notify(title: &str, body: &str) {
     if app().window_mode {
-        unsafe { PostMessageW(app().tray, WM_TESTNOTIFY, 0, 0) };
         return;
     }
     let mut nid = tray_data();
@@ -235,11 +255,12 @@ fn notify(title: &str, body: &str) {
     unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
 }
 
-// ---------- reminders ----------
+// ---------- reminders, budget, payments (tray) ----------
 
 struct Due {
     key: String,
     text: String,
+    trial: bool,
 }
 
 fn due_list() -> Vec<Due> {
@@ -253,14 +274,24 @@ fn due_list() -> Vec<Due> {
         .filter_map(|s| {
             let d = next_due(s, t);
             let left = d - t;
-            (left <= s.remind.max(0)).then(|| (d, Due {
-                key: format!("{}|{}", s.id, d),
-                text: format!("{} {} – {}", s.name, money(s.price, &s.cur), due_text(left).to_lowercase()),
-            }))
+            if left > s.remind.max(0) {
+                return None;
+            }
+            let trial = s.in_trial(t);
+            let text = if trial {
+                format!("{} trial ends {} – then {}", s.name, due_text(left), money(s.price, &s.cur))
+            } else {
+                format!("{} {} – {}", s.name, money(s.price, &s.cur), due_text(left))
+            };
+            Some((d, Due { key: format!("{}|{}", s.id, d), text, trial }))
         })
         .collect();
     v.sort_by_key(|x| x.0);
     v.into_iter().map(|x| x.1).collect()
+}
+
+fn window_open() -> bool {
+    unsafe { !FindWindowW(w("SubscribityWindow").as_ptr(), null()).is_null() }
 }
 
 fn check_reminders(show_toast: bool) {
@@ -276,7 +307,13 @@ fn check_reminders(show_toast: bool) {
             a.store.notified.insert(d.key.clone());
         }
         if show_toast {
-            let title = if fresh.len() == 1 { "Subscription renewing soon".to_string() } else { format!("{} subscriptions renewing soon", fresh.len()) };
+            let trials = fresh.iter().filter(|d| d.trial).count();
+            let title = match (fresh.len(), trials) {
+                (1, 1) => "Free trial ending soon".to_string(),
+                (1, _) => "Subscription renewing soon".to_string(),
+                (n, 0) => format!("{} subscriptions renewing soon", n),
+                (n, _) => format!("{} renewals and trials coming up", n),
+            };
             let mut body: Vec<String> = fresh.iter().take(4).map(|d| d.text.clone()).collect();
             if fresh.len() > 4 {
                 body.push(format!("+{} more", fresh.len() - 4));
@@ -284,29 +321,88 @@ fn check_reminders(show_toast: bool) {
             notify(&title, &body.join("\n"));
         }
     }
-    if !find_window().is_null() {
-        // The window is open, so the user has seen everything.
+    if window_open() {
         a.store.ack.extend(keys.iter().cloned());
     }
     a.store.save_state();
     let unseen = due.iter().filter(|d| !a.store.ack.contains(&d.key)).count() as i32;
-    let mut tip = if due.is_empty() {
-        format!("{} – nothing renewing soon", APP_NAME)
-    } else {
-        let mut t = format!("{} – {} renewing soon", APP_NAME, due.len());
-        for d in due.iter().take(3) {
-            t.push('\n');
-            t.push_str(&d.text);
-        }
-        t
-    };
-    if tip.encode_utf16().count() > 127 {
-        tip = tip.chars().take(120).collect::<String>() + "…";
+    let (total, _) = a.store.monthly_total();
+    let mut tip = format!("{} – {}/month", APP_NAME, money(total, &a.store.settings.main_cur));
+    if !due.is_empty() {
+        tip.push_str(&format!("\n{} due soon", due.len()));
     }
     set_badge(unseen, &tip);
+    check_budget();
 }
 
-// ---------- exchange rates (background thread, WinHTTP) ----------
+fn check_budget() {
+    let a = app();
+    let budget = a.store.settings.budget;
+    let (total, _) = a.store.monthly_total();
+    let over = budget > 0.0 && total > budget + 0.005;
+    if over && !a.store.settings.budget_alerted {
+        let main = a.store.settings.main_cur.clone();
+        notify("Over your monthly budget", &format!("Subscriptions now cost {}/month, your budget is {}.", money(total, &main), money(budget, &main)));
+        a.store.edit_settings(|s| s.budget_alerted = true);
+    } else if !over && a.store.settings.budget_alerted {
+        a.store.edit_settings(|s| s.budget_alerted = false);
+    }
+}
+
+/// Daily housekeeping in the tray: payment log and weekly backup.
+fn housekeeping() {
+    let a = app();
+    a.store.log_payments(a.today);
+    a.store.backup_if_due(a.today);
+}
+
+fn popup_data() -> popup::Data {
+    let a = app();
+    let t = today();
+    let st = &a.store;
+    let main = st.settings.main_cur.clone();
+    let (total, missing) = st.monthly_total();
+    let active = st.subs.iter().filter(|s| s.active).count();
+    let mut items: Vec<(i32, popup::Item)> = st
+        .subs
+        .iter()
+        .filter(|s| s.active)
+        .map(|s| {
+            let d = next_due(s, t);
+            let left = d - t;
+            let trial = s.in_trial(t);
+            let when = if trial { format!("Trial ends {}", due_text(left)) } else { format!("{} · {}", fmt_date(d), due_text(left)) };
+            let tone = if trial { 3 } else if left == 0 { 2 } else if left <= s.remind { 1 } else { 0 };
+            (d, popup::Item { id: s.id, name: s.name.clone(), when, price: money(s.price, &s.cur), tone })
+        })
+        .filter(|(d, _)| d - t <= 30)
+        .collect();
+    items.sort_by_key(|x| x.0);
+    popup::Data {
+        total: money(total, &main) + if missing { "*" } else { "" },
+        caption: format!("{} active", active),
+        budget: (st.settings.budget > 0.0).then(|| {
+            let b = st.settings.budget;
+            let label = if total > b {
+                format!("{} over your {} budget", money(total - b, &main), money(b, &main))
+            } else {
+                format!("{} left of your {} budget", money(b - total, &main), money(b, &main))
+            };
+            ((total / b) as f32, label)
+        }),
+        items: items.into_iter().take(6).map(|x| x.1).collect(),
+    }
+}
+
+fn on_popup_action(action: popup::Action) {
+    match action {
+        popup::Action::Open => open_window(0),
+        popup::Action::Add => open_window(2),
+        popup::Action::Edit(id) => open_window(1000 + id as usize),
+    }
+}
+
+// ---------- exchange rates ----------
 
 fn maybe_fetch_rates(force: bool) {
     let a = app();
@@ -324,8 +420,7 @@ fn maybe_fetch_rates(force: bool) {
         let result = http_get("open.er-api.com", &format!("/v6/latest/{}", main))
             .and_then(|body| parse_rates(&body))
             .map(|r| (main, r));
-        let boxed = Box::into_raw(Box::new(result));
-        unsafe { PostMessageW(host as HWND, WM_RATES, 0, boxed as isize) };
+        unsafe { PostMessageW(host as HWND, WM_RATES, 0, Box::into_raw(Box::new(result)) as isize) };
     });
 }
 
@@ -371,36 +466,149 @@ fn rates_status() -> String {
     if a.rates_busy {
         "Updating…".into()
     } else if st.rates_date > 0 && st.rates_base == st.main_cur {
-        format!("Updated {} · refreshed daily from open.er-api.com", fmt_date(st.rates_date))
+        format!("Updated {} · refreshed daily", fmt_date(st.rates_date))
     } else {
-        "Not downloaded yet · needed only for subscriptions in other currencies".into()
+        "Downloaded when you add a subscription in another currency".into()
     }
 }
 
-// ---------- autostart ----------
+fn on_rates(lp: LPARAM) {
+    let a = app();
+    a.rates_busy = false;
+    let res = unsafe { Box::from_raw(lp as *mut Option<(String, HashMap<String, f64>)>) };
+    match *res {
+        Some((base, rates)) => {
+            a.store.rates = rates;
+            a.store.save_rates();
+            let day = today();
+            a.store.edit_settings(|s| {
+                s.rates_base = base;
+                s.rates_date = day;
+            });
+            send_js(&json!({"type": "toast", "text": "Exchange rates updated"}));
+            if a.window_mode {
+                after_change();
+            } else {
+                check_budget();
+            }
+        }
+        None => send_js(&json!({"type": "toast", "text": "Could not download exchange rates"})),
+    }
+    send_js(&state_json());
+    trim_memory();
+}
 
-const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+// ---------- updates ----------
 
-fn autostart_enabled() -> bool {
-    unsafe {
-        let mut size = 0u32;
-        RegGetValueW(HKEY_CURRENT_USER, w(RUN_KEY).as_ptr(), w(APP_NAME).as_ptr(), RRF_RT_REG_SZ, null_mut(), null_mut(), &mut size) == 0
+fn update_status() -> String {
+    let a = app();
+    let st = &a.store.settings;
+    if a.update_busy {
+        "Working…".into()
+    } else if update::is_newer(&st.latest_version, VERSION) {
+        format!("Version {} is available (you have {})", st.latest_version, VERSION)
+    } else if st.update_last > 0 {
+        format!("Version {} is the latest · checked {}", VERSION, fmt_date(st.update_last))
+    } else {
+        format!("Version {}", VERSION)
     }
 }
 
-fn set_autostart(on: bool) {
-    unsafe {
-        if on {
-            let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-            let v = w(&format!("\"{}\"", exe));
-            RegSetKeyValueW(HKEY_CURRENT_USER, w(RUN_KEY).as_ptr(), w(APP_NAME).as_ptr(), REG_SZ, v.as_ptr() as *const c_void, (v.len() * 2) as u32);
-        } else {
-            RegDeleteKeyValueW(HKEY_CURRENT_USER, w(RUN_KEY).as_ptr(), w(APP_NAME).as_ptr());
+fn maybe_check_updates(force: bool) {
+    let a = app();
+    let days = match a.store.settings.update_freq.as_str() {
+        "monthly" => 30,
+        "off" => i32::MAX,
+        _ => 7,
+    };
+    if a.update_busy || (!force && (days == i32::MAX || a.today - a.store.settings.update_last < days)) {
+        return;
+    }
+    a.update_busy = true;
+    let host = a.host as isize;
+    std::thread::spawn(move || {
+        let r = update::latest().map(|rel| rel.version);
+        unsafe { PostMessageW(host as HWND, WM_UPDATE, 0, Box::into_raw(Box::new(r)) as isize) };
+    });
+}
+
+fn on_update(lp: LPARAM) {
+    let a = app();
+    a.update_busy = false;
+    let res = unsafe { Box::from_raw(lp as *mut Result<String, String>) };
+    let day = today();
+    match *res {
+        Ok(v) => {
+            let newer = update::is_newer(&v, VERSION);
+            let announce = newer && !a.window_mode && a.store.settings.update_notified != v;
+            a.store.edit_settings(|s| {
+                s.latest_version = v.clone();
+                s.update_last = day;
+                if announce {
+                    s.update_notified = v.clone();
+                }
+            });
+            if announce {
+                notify(&format!("{} {} is available", APP_NAME, v), "Click to open the app and install it with one click.");
+            }
+            send_js(&json!({"type": "toast", "text": if newer { format!("Version {} is available", v) } else { "You have the latest version".to_string() }}));
+        }
+        Err(e) => {
+            a.store.edit_settings(|s| s.update_last = day); // try again next period, not every few minutes
+            send_js(&json!({"type": "toast", "text": format!("Could not check for updates: {}", e)}));
+        }
+    }
+    send_js(&state_json());
+}
+
+fn install_update() {
+    let a = app();
+    if a.update_busy {
+        return;
+    }
+    a.update_busy = true;
+    send_js(&state_json());
+    let host = a.host as isize;
+    std::thread::spawn(move || {
+        let r = update::latest()
+            .and_then(|rel| {
+                if !update::is_newer(&rel.version, VERSION) {
+                    return Err("you already have the latest version".into());
+                }
+                update::download_verified(&rel).map(|exe| (rel.version, exe))
+            })
+            .and_then(|(v, exe)| update::swap_in(&system::exe(), &exe).map(|_| v));
+        unsafe { PostMessageW(host as HWND, WM_INSTALLED, 0, Box::into_raw(Box::new(r)) as isize) };
+    });
+}
+
+fn on_installed(lp: LPARAM) {
+    let a = app();
+    a.update_busy = false;
+    let res = unsafe { Box::from_raw(lp as *mut Result<String, String>) };
+    match *res {
+        Ok(_) => unsafe {
+            // Stop the old tray, start the new version, close this window.
+            if !a.tray.is_null() {
+                PostMessageW(a.tray, WM_CLOSE, 0, 0);
+                for _ in 0..50 {
+                    if FindWindowW(w("SubscribityHost").as_ptr(), null()).is_null() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+            shell_open(&system::exe().to_string_lossy(), Some("--updated --open"));
+            close_window();
+        },
+        Err(e) => {
+            send_js(&json!({"type": "toast", "text": format!("Update failed: {}", e)}));
+            send_js(&state_json());
         }
     }
 }
 
-// ---------- window + WebView2 ----------
+// ---------- window (separate process) ----------
 
 struct Win(HWND);
 impl HasWindowHandle for Win {
@@ -410,48 +618,12 @@ impl HasWindowHandle for Win {
     }
 }
 
-fn is_dark() -> bool {
-    match app().store.settings.theme.as_str() {
-        "dark" => true,
-        "light" => false,
-        _ => unsafe {
-            // AppsUseLightTheme = 0 means dark mode.
-            let mut v = 1u32;
-            let mut size = 4u32;
-            RegGetValueW(
-                HKEY_CURRENT_USER,
-                w("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize").as_ptr(),
-                w("AppsUseLightTheme").as_ptr(),
-                RRF_RT_REG_DWORD, null_mut(), &mut v as *mut u32 as *mut c_void, &mut size,
-            );
-            v == 0
-        },
-    }
-}
-
-fn set_title_bar_theme(h: HWND) {
-    if h.is_null() {
-        return;
-    }
-    // DWMWA_USE_IMMERSIVE_DARK_MODE = 20; loaded lazily so dwmapi is not a startup import.
-    unsafe {
-        let lib = LoadLibraryW(w("dwmapi.dll").as_ptr());
-        if let Some(f) = GetProcAddress(lib, b"DwmSetWindowAttribute\0".as_ptr()) {
-            let set: unsafe extern "system" fn(HWND, u32, *const c_void, u32) -> i32 = std::mem::transmute(f);
-            let dark: i32 = is_dark() as i32;
-            set(h, 20, &dark as *const i32 as *const c_void, 4);
-        }
-    }
-}
-
 fn find_window() -> HWND {
     unsafe { FindWindowW(w("SubscribityWindow").as_ptr(), null()) }
 }
 
-/// Tray side: show the window, which lives in its own short-lived process so that
-/// closing it returns all WebView2 memory to Windows.
-fn open_window(page: Option<&str>, add: bool) {
-    let code = if add { 2 } else if page == Some("settings") { 1 } else { 0 };
+/// Tray side: show the window (codes: 0 main, 1 settings, 2 add, 1000+id edit).
+fn open_window(code: usize) {
     let h = find_window();
     if !h.is_null() {
         unsafe {
@@ -463,19 +635,25 @@ fn open_window(page: Option<&str>, add: bool) {
         }
         return;
     }
-    if let Ok(exe) = std::env::current_exe() {
-        let args = match code {
-            1 => "--window --settings",
-            2 => "--window --add",
-            _ => "--window",
-        };
-        unsafe {
-            ShellExecuteW(null_mut(), w("open").as_ptr(), w(&exe.to_string_lossy()).as_ptr(), w(args).as_ptr(), null(), SW_SHOWNORMAL);
-        }
+    let args = match code {
+        0 => "--window".to_string(),
+        1 => "--window --settings".to_string(),
+        2 => "--window --add".to_string(),
+        c => format!("--window --edit={}", c - 1000),
+    };
+    shell_open(&system::exe().to_string_lossy(), Some(&args));
+}
+
+fn open_msg(code: usize) -> Option<Value> {
+    match code {
+        1 => Some(json!({"type": "open", "page": "settings"})),
+        2 => Some(json!({"type": "open", "page": "subs", "add": true})),
+        c if c >= 1000 => Some(json!({"type": "open", "page": "subs", "edit": c - 1000})),
+        _ => None,
     }
 }
 
-/// Window process: data changed, let the tray reload it and recheck reminders.
+/// Window process: data changed, the tray reloads it.
 fn after_change() {
     let a = app();
     if a.window_mode {
@@ -485,21 +663,33 @@ fn after_change() {
     }
 }
 
-fn create_window(open_msg: Option<Value>) {
+fn create_window(code: usize) {
     let a = app();
     unsafe {
+        // Always open centred on the monitor under the mouse (where the tray click was),
+        // at the remembered size if there is one, never larger than that monitor's work area.
         let mut wa: RECT = std::mem::zeroed();
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as *mut c_void, 0);
-        let ww = ((1040.0 * a.scale) as i32).min(wa.right - wa.left - 24);
-        let wh = ((720.0 * a.scale) as i32).min(wa.bottom - wa.top - 24);
-        let (x, y) = (wa.right - ww - 12, wa.bottom - wh - 12);
-        a.win = CreateWindowExW(0, w("SubscribityWindow").as_ptr(), w(APP_NAME).as_ptr(), WS_OVERLAPPEDWINDOW, x, y, ww, wh, null_mut(), null_mut(), a.hinst, null());
-        set_title_bar_theme(a.win);
+        let mut pt = POINT { x: 0, y: 0 };
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetCursorPos(&mut pt) != 0 && GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mut mi) != 0 {
+            wa = mi.rcWork;
+        }
+        let (_, _, sw, sh) = a.store.settings.window;
+        let (dw, dh) = if sw > 200 && sh > 200 { (sw, sh) } else { ((1040.0 * a.scale) as i32, (720.0 * a.scale) as i32) };
+        let cw = dw.min(wa.right - wa.left - 24);
+        let ch = dh.min(wa.bottom - wa.top - 24);
+        let x = wa.left + (wa.right - wa.left - cw) / 2;
+        let y = wa.top + (wa.bottom - wa.top - ch) / 2;
+        a.win = CreateWindowExW(0, w("SubscribityWindow").as_ptr(), w(APP_NAME).as_ptr(), WS_OVERLAPPEDWINDOW, x, y, cw, ch, null_mut(), null_mut(), a.hinst, null());
+        dwm_set(a.win, 20, 1); // dark title bar
+        dwm_set(a.win, 35, 0x00271D1B); // caption color = sidebar (Windows 11)
     }
-    a.host = a.win; // background results (rates) come back to this window
+    a.host = a.win;
     a.page_ready = false;
     a.pending.clear();
-    if let Some(m) = open_msg {
+    if let Some(m) = open_msg(code) {
         a.pending.push(m.to_string());
     }
 
@@ -508,19 +698,19 @@ fn create_window(open_msg: Option<Value>) {
         .map(|p| std::path::PathBuf::from(p).join("Subscribity").join("WebView2"))
         .unwrap_or_else(|_| data_dir().join("webview"));
     let mut ctx = wry::WebContext::new(Some(profile));
-    let bg = if is_dark() { (18, 19, 26, 255) } else { (244, 245, 251, 255) };
     let built = wry::WebViewBuilder::with_web_context(&mut ctx)
         .with_html(UI_HTML)
-        .with_background_color(bg)
+        .with_background_color((18, 19, 26, 255))
+        .with_theme(wry::Theme::Dark)
+        .with_additional_browser_args(BROWSER_ARGS)
         .with_devtools(cfg!(debug_assertions))
         .with_ipc_handler(move |req| {
-            // Handle on the host window's message loop, outside the WebView2 callback.
             let body = Box::into_raw(Box::new(req.body().clone()));
             unsafe { PostMessageW(host as HWND, WM_IPC, 0, body as isize) };
         })
         .with_new_window_req_handler(|url| {
             if url.starts_with("https://") {
-                shell_open(&url);
+                shell_open(&url, None);
             }
             false
         })
@@ -544,6 +734,27 @@ fn create_window(open_msg: Option<Value>) {
 
 fn close_window() {
     let a = app();
+    if !a.win.is_null() {
+        unsafe {
+            let mut wp: WINDOWPLACEMENT = std::mem::zeroed();
+            wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+            // Screen coordinates, as CreateWindowExW takes them. rcNormalPosition is in
+            // workspace coordinates (offset by a top/left taskbar), so use it only when the
+            // window is minimized or maximized and its own rect isn't the normal one.
+            let mut r: RECT = std::mem::zeroed();
+            let ok = if IsIconic(a.win) == 0 && IsZoomed(a.win) == 0 {
+                GetWindowRect(a.win, &mut r) != 0
+            } else if GetWindowPlacement(a.win, &mut wp) != 0 {
+                r = wp.rcNormalPosition;
+                true
+            } else {
+                false
+            };
+            if ok {
+                a.store.edit_settings(|s| s.window = (r.left, r.top, r.right - r.left, r.bottom - r.top));
+            }
+        }
+    }
     a.webview = None;
     a.page_ready = false;
     a.pending.clear();
@@ -552,30 +763,7 @@ fn close_window() {
         a.win = null_mut();
         unsafe { DestroyWindow(h) };
     }
-    // The window process ends here; Windows reclaims all WebView2 memory.
-    unsafe { PostQuitMessage(0) };
-}
-
-fn on_rates(lp: LPARAM) {
-    let a = app();
-    a.rates_busy = false;
-    let res = unsafe { Box::from_raw(lp as *mut Option<(String, HashMap<String, f64>)>) };
-    match *res {
-        Some((base, rates)) => {
-            a.store.rates = rates;
-            a.store.settings.rates_base = base;
-            a.store.settings.rates_date = today();
-            a.store.save_rates();
-            a.store.save_settings();
-            send_js(&json!({"type": "toast", "text": "Exchange rates updated"}));
-            if a.window_mode {
-                after_change();
-            }
-        }
-        None => send_js(&json!({"type": "toast", "text": "Could not download exchange rates"})),
-    }
-    send_js(&state_json());
-    trim_memory();
+    unsafe { PostQuitMessage(0) }; // the window process ends; Windows reclaims everything
 }
 
 fn eval(v: &str) {
@@ -611,23 +799,39 @@ fn state_json() -> Value {
                 "every": s.every.max(1), "unit": s.unit, "next": iso(d), "left": d - t,
                 "category": s.category, "payment": s.payment, "remind": s.remind,
                 "active": s.active, "notes": s.notes, "url": s.url,
+                "trial": s.trial, "inTrial": s.in_trial(t),
+                "history": s.history.iter().map(|(d, p)| json!({"date": iso(*d), "price": p})).collect::<Vec<_>>(),
                 "monthly": monthly(s),
                 "monthlyMain": st.to_main(monthly(s), &s.cur),
                 "priceMain": st.to_main(s.price, &s.cur),
             })
         })
         .collect();
+    let since = t - 800;
+    let payments: Vec<Value> = st
+        .payments
+        .iter()
+        .rev()
+        .filter(|p| p.date >= since)
+        .take(1000)
+        .map(|p| json!({"id": p.sub_id, "date": iso(p.date), "amount": p.amount, "cur": p.cur, "name": p.name, "amountMain": st.to_main(p.amount, &p.cur)}))
+        .collect();
+    let backups: Vec<Value> = st.backups().into_iter().map(|n| json!({"name": n})).collect();
+    let (total, _) = st.monthly_total();
     json!({
         "type": "state",
         "version": VERSION,
         "today": iso(t),
         "subs": subs,
+        "payments": payments,
+        "backups": backups,
+        "monthTotal": total,
         "currencies": CURRENCIES,
         "settings": {
             "main": st.settings.main_cur,
             "remind": st.settings.default_remind,
-            "theme": st.settings.theme,
-            "autostart": autostart_enabled(),
+            "budget": st.settings.budget,
+            "autostart": system::autostart_enabled(),
             "ratesStatus": rates_status(),
             "updateFreq": st.settings.update_freq,
             "latest": if update::is_newer(&st.settings.latest_version, VERSION) { st.settings.latest_version.as_str() } else { "" },
@@ -635,123 +839,6 @@ fn state_json() -> Value {
             "updateBusy": a.update_busy,
         }
     })
-}
-
-// ---------- updates ----------
-
-fn update_status() -> String {
-    let a = app();
-    let st = &a.store.settings;
-    if a.update_busy {
-        "Working…".into()
-    } else if update::is_newer(&st.latest_version, VERSION) {
-        format!("Version {} is available (you have {})", st.latest_version, VERSION)
-    } else if st.update_last > 0 {
-        format!("You have the latest version ({}) · checked {}", VERSION, fmt_date(st.update_last))
-    } else {
-        format!("Version {}", VERSION)
-    }
-}
-
-/// Checks GitHub Releases in the background (weekly or monthly, or now when forced).
-fn maybe_check_updates(force: bool) {
-    let a = app();
-    let days = match a.store.settings.update_freq.as_str() {
-        "monthly" => 30,
-        "off" => i32::MAX,
-        _ => 7,
-    };
-    if a.update_busy || (!force && (days == i32::MAX || a.today - a.store.settings.update_last < days)) {
-        return;
-    }
-    a.update_busy = true;
-    let host = a.host as isize;
-    std::thread::spawn(move || {
-        let r = update::latest().map(|rel| rel.version);
-        unsafe { PostMessageW(host as HWND, WM_UPDATE, 0, Box::into_raw(Box::new(r)) as isize) };
-    });
-}
-
-fn on_update(lp: LPARAM) {
-    let a = app();
-    a.update_busy = false;
-    let res = unsafe { Box::from_raw(lp as *mut Result<String, String>) };
-    match *res {
-        Ok(v) => {
-            a.store.settings.latest_version = v.clone();
-            a.store.settings.update_last = today();
-            let newer = update::is_newer(&v, VERSION);
-            if newer && !a.window_mode && a.store.settings.update_notified != v {
-                a.store.settings.update_notified = v.clone();
-                notify(&format!("{} {} is available", APP_NAME, v), "Open Settings in the app to install it with one click.");
-            }
-            a.store.save_settings();
-            send_js(&json!({"type": "toast", "text": if newer { format!("Version {} is available", v) } else { "You have the latest version".to_string() }}));
-            if a.window_mode {
-                after_change();
-            }
-        }
-        Err(e) => {
-            // Don't retry every few minutes while offline; try again at the next period.
-            a.store.settings.update_last = today();
-            a.store.save_settings();
-            send_js(&json!({"type": "toast", "text": format!("Could not check for updates: {}", e)}));
-        }
-    }
-    send_js(&state_json());
-}
-
-/// Window process: download, verify and install the latest release, then restart.
-fn install_update() {
-    let a = app();
-    if a.update_busy {
-        return;
-    }
-    a.update_busy = true;
-    send_js(&state_json());
-    let host = a.host as isize;
-    std::thread::spawn(move || {
-        let r = update::latest()
-            .and_then(|rel| {
-                if !update::is_newer(&rel.version, VERSION) {
-                    return Err("you already have the latest version".into());
-                }
-                update::download_verified(&rel).map(|exe| (rel.version, exe))
-            })
-            .and_then(|(v, exe)| {
-                let path = std::env::current_exe().map_err(|e| e.to_string())?;
-                update::swap_in(&path, &exe).map(|_| v)
-            });
-        unsafe { PostMessageW(host as HWND, WM_INSTALLED, 0, Box::into_raw(Box::new(r)) as isize) };
-    });
-}
-
-fn on_installed(lp: LPARAM) {
-    let a = app();
-    a.update_busy = false;
-    let res = unsafe { Box::from_raw(lp as *mut Result<String, String>) };
-    match *res {
-        Ok(_) => unsafe {
-            // Stop the old tray, start the new version, and close this window.
-            if !a.tray.is_null() {
-                PostMessageW(a.tray, WM_CLOSE, 0, 0);
-                for _ in 0..50 {
-                    if FindWindowW(w("SubscribityHost").as_ptr(), null()).is_null() {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-            }
-            if let Ok(exe) = std::env::current_exe() {
-                ShellExecuteW(null_mut(), w("open").as_ptr(), w(&exe.to_string_lossy()).as_ptr(), w("--updated --open").as_ptr(), null(), SW_SHOWNORMAL);
-            }
-            close_window();
-        },
-        Err(e) => {
-            send_js(&json!({"type": "toast", "text": format!("Update failed: {}", e)}));
-            send_js(&state_json());
-        }
-    }
 }
 
 fn calendar_json(y: i32, m: u32) -> Value {
@@ -764,7 +851,7 @@ fn calendar_json(y: i32, m: u32) -> Value {
         let mut guard = 0;
         while d <= last && guard < 40 {
             let (_, _, day) = civil_from_days(d);
-            events.push(json!({"day": day, "id": s.id, "name": s.name, "price": s.price, "cur": s.cur, "priceMain": a.store.to_main(s.price, &s.cur)}));
+            events.push(json!({"day": day, "id": s.id, "name": s.name, "price": s.price, "cur": s.cur, "priceMain": a.store.to_main(s.price, &s.cur), "trial": s.in_trial(d)}));
             d = next_due(s, d + 1);
             guard += 1;
         }
@@ -776,22 +863,40 @@ fn str_of(v: &Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_string()
 }
 
+/// Builds a subscription from the window's form (or an import row).
+fn sub_from_json(s: &Value, id: u32, default_cur: &str, default_remind: i32) -> Option<Sub> {
+    let name: String = str_of(s, "name").chars().take(80).collect();
+    let price = s.get("price").and_then(|p| p.as_f64()).filter(|p| p.is_finite() && *p >= 0.0)?;
+    let start = parse_iso(&str_of(s, "start"))?;
+    if name.is_empty() {
+        return None;
+    }
+    let cur = str_of(s, "cur").to_uppercase();
+    Some(Sub {
+        id,
+        name,
+        price,
+        cur: if cur.len() == 3 { cur } else { default_cur.to_string() },
+        every: s.get("every").and_then(|x| x.as_u64()).unwrap_or(1).clamp(1, 999) as u32,
+        unit: s.get("unit").and_then(|x| x.as_u64()).unwrap_or(2).min(3) as u8,
+        start,
+        category: str_of(s, "category").chars().take(40).collect(),
+        payment: str_of(s, "payment").chars().take(40).collect(),
+        remind: s.get("remind").and_then(|x| x.as_i64()).map_or(default_remind, |r| r.clamp(0, 365) as i32),
+        active: s.get("active").and_then(|x| x.as_bool()).unwrap_or(true),
+        notes: s.get("notes").and_then(|x| x.as_str()).unwrap_or("").chars().take(500).collect(),
+        url: str_of(s, "url").chars().take(200).collect(),
+        trial: s.get("trial").and_then(|x| x.as_bool()).unwrap_or(false),
+        history: Vec::new(),
+    })
+}
+
 fn handle_ipc(body: &str) {
     let Ok(msg) = serde_json::from_str::<Value>(body) else { return };
     let a = app();
+    let main_cur = a.store.settings.main_cur.clone();
+    let default_remind = a.store.settings.default_remind;
     match msg.get("cmd").and_then(|c| c.as_str()).unwrap_or("") {
-        "update_check" => maybe_check_updates(true),
-        "update_install" => install_update(),
-        "update_freq" => {
-            let f = str_of(&msg, "freq");
-            if ["weekly", "monthly", "off"].contains(&f.as_str()) {
-                a.store.settings.update_freq = f;
-                a.store.save_settings();
-                after_change();
-            }
-            send_js(&state_json());
-        }
-        "open_release" => shell_open(&format!("https://github.com/{}/releases/latest", update::REPO)),
         "ready" => {
             a.page_ready = true;
             eval(&state_json().to_string());
@@ -801,39 +906,36 @@ fn handle_ipc(body: &str) {
             after_change(); // lets the tray clear its badge
         }
         "save" => {
-            let s = &msg["sub"];
-            let name: String = str_of(s, "name").chars().take(80).collect();
-            let price = s.get("price").and_then(|p| p.as_f64()).filter(|p| p.is_finite() && *p >= 0.0);
-            let start = parse_iso(&str_of(s, "start"));
-            let (Some(price), Some(start), false) = (price, start, name.is_empty()) else {
+            let id = msg["sub"].get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+            let existing = a.store.subs.iter().position(|x| x.id == id && id != 0);
+            let new_id = if existing.is_some() { id } else { a.store.next_id() };
+            let Some(mut sub) = sub_from_json(&msg["sub"], new_id, &main_cur, default_remind) else {
                 send_js(&json!({"type": "error", "text": "Please check the name, price and date."}));
                 return;
             };
-            let id = s.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-            let cur = str_of(s, "cur");
-            let sub = Sub {
-                id: if id == 0 { a.store.next_id() } else { id },
-                name,
-                price,
-                cur: if cur.is_empty() { a.store.settings.main_cur.clone() } else { cur },
-                every: s.get("every").and_then(|x| x.as_u64()).unwrap_or(1).clamp(1, 999) as u32,
-                unit: s.get("unit").and_then(|x| x.as_u64()).unwrap_or(2).min(3) as u8,
-                start,
-                category: str_of(s, "category").chars().take(40).collect(),
-                payment: str_of(s, "payment").chars().take(40).collect(),
-                remind: s.get("remind").and_then(|x| x.as_i64()).unwrap_or(3).clamp(0, 365) as i32,
-                active: s.get("active").and_then(|x| x.as_bool()).unwrap_or(true),
-                notes: s.get("notes").and_then(|x| x.as_str()).unwrap_or("").chars().take(500).collect(),
-                url: str_of(s, "url").chars().take(200).collect(),
-            };
-            let existed = a.store.subs.iter().position(|x| x.id == sub.id);
-            match existed {
-                Some(i) => a.store.subs[i] = sub,
-                None => a.store.subs.push(sub),
+            if let Some(i) = existing {
+                let old = &a.store.subs[i];
+                // The form shows the next payment, not the original billing day. If it wasn't
+                // changed, keep the original day (a bill on the 31st stays on the 31st).
+                if sub.start == next_due(old, a.today) && sub.every == old.every && sub.unit == old.unit {
+                    sub.start = old.start;
+                }
+                sub.history = old.history.clone();
+                if sub.cur != old.cur {
+                    sub.history.clear();
+                } else if (sub.price - old.price).abs() > 0.004 {
+                    sub.history.push((a.today, old.price));
+                    if sub.history.len() > 20 {
+                        sub.history.remove(0);
+                    }
+                }
+                a.store.subs[i] = sub;
+            } else {
+                a.store.subs.push(sub);
             }
             a.store.save_subs();
             send_js(&state_json());
-            send_js(&json!({"type": "saved", "text": if existed.is_some() { "Saved" } else { "Subscription added" }}));
+            send_js(&json!({"type": "saved", "text": if existing.is_some() { "Saved" } else { "Subscription added" }}));
             after_change();
             maybe_fetch_rates(false);
         }
@@ -845,24 +947,45 @@ fn handle_ipc(body: &str) {
             send_js(&json!({"type": "toast", "text": "Deleted"}));
             after_change();
         }
+        "import" => {
+            let mut added = 0;
+            for row in msg.get("items").and_then(|i| i.as_array()).map(|v| v.as_slice()).unwrap_or(&[]) {
+                let id = a.store.next_id();
+                if let Some(s) = sub_from_json(row, id, &main_cur, default_remind) {
+                    a.store.subs.push(s);
+                    added += 1;
+                }
+            }
+            a.store.save_subs();
+            send_js(&state_json());
+            send_js(&json!({"type": "toast", "text": format!("Imported {} subscription{}", added, if added == 1 { "" } else { "s" })}));
+            after_change();
+            maybe_fetch_rates(false);
+        }
+        "delete_payment" => {
+            let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+            if let Some(d) = parse_iso(&str_of(&msg, "date")) {
+                a.store.delete_payment(id, d);
+            }
+            send_js(&state_json());
+        }
         "settings" => {
             let main = str_of(&msg, "main");
-            if main.len() == 3 {
-                a.store.settings.main_cur = main;
-            }
-            a.store.settings.default_remind = msg.get("remind").and_then(|x| x.as_i64()).unwrap_or(3).clamp(0, 365) as i32;
-            let theme = str_of(&msg, "theme");
-            if ["system", "light", "dark"].contains(&theme.as_str()) {
-                a.store.settings.theme = theme;
-            }
-            a.store.save_settings();
-            set_title_bar_theme(a.win);
+            let remind = msg.get("remind").and_then(|x| x.as_i64()).unwrap_or(3).clamp(0, 365) as i32;
+            let budget = msg.get("budget").and_then(|x| x.as_f64()).filter(|b| b.is_finite() && *b >= 0.0).unwrap_or(0.0);
+            a.store.edit_settings(|s| {
+                if main.len() == 3 {
+                    s.main_cur = main;
+                }
+                s.default_remind = remind;
+                s.budget = budget;
+            });
             maybe_fetch_rates(false);
             send_js(&state_json());
             after_change();
         }
         "autostart" => {
-            set_autostart(msg.get("on").and_then(|x| x.as_bool()).unwrap_or(false));
+            system::set_autostart(msg.get("on").and_then(|x| x.as_bool()).unwrap_or(false));
             send_js(&state_json());
         }
         "rates" => {
@@ -874,8 +997,17 @@ fn handle_ipc(body: &str) {
             let m = msg.get("m").and_then(|x| x.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
             send_js(&calendar_json(y, m));
         }
-        "test_notify" => notify("Subscribity notifications work", "You'll get a reminder like this before a subscription renews."),
-        "open_folder" => shell_open(&data_dir().to_string_lossy()),
+        "restore" => {
+            let name = str_of(&msg, "name");
+            if a.store.restore(&name, a.today) {
+                send_js(&json!({"type": "toast", "text": "Backup restored"}));
+                after_change();
+            } else {
+                send_js(&json!({"type": "toast", "text": "Could not restore that backup"}));
+            }
+            send_js(&state_json());
+        }
+        "open_folder" => shell_open(&data_dir().to_string_lossy(), None),
         "export" => {
             let mut csv = String::from("Name,Price,Currency,Cycle,Next payment,Category,Payment method,Active,Website,Notes\r\n");
             let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\"").replace(['\r', '\n'], " "));
@@ -886,12 +1018,22 @@ fn handle_ipc(body: &str) {
                     q(&s.category), q(&s.payment), if s.active { "yes" } else { "no" }, q(&s.url), q(&s.notes)
                 ));
             }
-            let path = data_dir().join("subscriptions-export.csv");
-            if std::fs::write(&path, csv).is_ok() {
-                send_js(&json!({"type": "toast", "text": "Exported subscriptions-export.csv"}));
-                shell_open(&data_dir().to_string_lossy());
+            if std::fs::write(data_dir().join(data::EXPORT_FILE), csv).is_ok() {
+                send_js(&json!({"type": "toast", "text": format!("Saved {}", data::EXPORT_FILE)}));
+                shell_open(&data_dir().to_string_lossy(), None);
             }
         }
+        "update_check" => maybe_check_updates(true),
+        "update_install" => install_update(),
+        "update_freq" => {
+            let f = str_of(&msg, "freq");
+            if ["weekly", "monthly", "off"].contains(&f.as_str()) {
+                a.store.edit_settings(|s| s.update_freq = f);
+            }
+            send_js(&state_json());
+        }
+        "open_release" => shell_open(&format!("https://github.com/{}/releases/latest", update::REPO), None),
+        "uninstall" => shell_open(&system::exe().to_string_lossy(), Some("--uninstall")),
         _ => {}
     }
 }
@@ -930,10 +1072,8 @@ unsafe extern "system" fn win_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             0
         }
         WM_OPENPAGE => {
-            match wp {
-                1 => send_js(&json!({"type": "open", "page": "settings"})),
-                2 => send_js(&json!({"type": "open", "page": "subs", "add": true})),
-                _ => {}
+            if let Some(m) = open_msg(wp) {
+                send_js(&m);
             }
             0
         }
@@ -947,17 +1087,18 @@ unsafe extern "system" fn win_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
     }
 }
 
-// ---------- hidden host window: tray, timer, rates, IPC ----------
+// ---------- hidden tray host window ----------
 
 fn tray_menu() {
     unsafe {
         let a = app();
+        popup::close();
         let m = CreatePopupMenu();
         AppendMenuW(m, 0, M_OPEN, w("Open Subscribity").as_ptr());
         AppendMenuW(m, 0, M_ADD, w("Add subscription…").as_ptr());
         AppendMenuW(m, 0, M_SETTINGS, w("Settings").as_ptr());
         AppendMenuW(m, 0x800, 0, null());
-        AppendMenuW(m, if autostart_enabled() { 8 } else { 0 }, M_AUTOSTART, w("Start with Windows").as_ptr());
+        AppendMenuW(m, if system::autostart_enabled() { 8 } else { 0 }, M_AUTOSTART, w("Start with Windows").as_ptr());
         AppendMenuW(m, 0x800, 0, null());
         AppendMenuW(m, 0, M_EXIT, w("Exit").as_ptr());
         SetMenuDefaultItem(m, M_OPEN as u32, 0);
@@ -968,10 +1109,10 @@ fn tray_menu() {
         PostMessageW(a.host, WM_NULL, 0, 0);
         DestroyMenu(m);
         match cmd as usize {
-            M_OPEN => open_window(None, false),
-            M_ADD => open_window(Some("subs"), true),
-            M_SETTINGS => open_window(Some("settings"), false),
-            M_AUTOSTART => set_autostart(!autostart_enabled()),
+            M_OPEN => open_window(0),
+            M_ADD => open_window(2),
+            M_SETTINGS => open_window(1),
+            M_AUTOSTART => system::set_autostart(!system::autostart_enabled()),
             M_EXIT => {
                 let win = find_window();
                 if !win.is_null() {
@@ -989,29 +1130,36 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
     match msg {
         WM_TRAY => {
             match (lp & 0xFFFF) as u32 {
-                0x202 /* WM_LBUTTONUP */ | 0x405 /* NIN_BALLOONUSERCLICK */ => open_window(None, false),
+                0x202 /* WM_LBUTTONUP */ => {
+                    check_reminders(false);
+                    popup::toggle(a.hinst, a.scale, (a.host, 1), popup_data, on_popup_action);
+                }
+                0x405 /* NIN_BALLOONUSERCLICK */ => open_window(0),
                 0x205 /* WM_RBUTTONUP */ => tray_menu(),
                 _ => {}
             }
             0
         }
         WM_OPEN => {
-            open_window(None, false);
+            open_window(0);
             0
         }
         WM_RELOAD => {
-            // The window process saved changes: reload from disk.
+            let notified = std::mem::take(&mut a.store.notified);
+            let ack = std::mem::take(&mut a.store.ack);
             a.store = Store::load(data_dir());
+            a.store.notified = notified;
+            a.store.ack = ack;
+            housekeeping();
             check_reminders(true);
             maybe_fetch_rates(false);
             trim_memory();
             0
         }
-        WM_TESTNOTIFY => {
-            notify("Subscribity notifications work", "You'll get a reminder like this before a subscription renews.");
-            0
-        }
         WM_TIMER => {
+            a.today = today();
+            a.store.reload_settings();
+            housekeeping();
             check_reminders(true);
             maybe_fetch_rates(false);
             maybe_check_updates(false);
@@ -1032,14 +1180,14 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             1
         }
         WM_DESTROY => {
+            popup::close();
             let nid = tray_data();
             Shell_NotifyIconW(NIM_DELETE, &nid);
             PostQuitMessage(0);
             0
         }
         _ if msg == a.taskbar_msg && msg != 0 => {
-            // Explorer restarted: put the icon back.
-            tray_add();
+            tray_add(); // Explorer restarted
             a.badge = -1;
             check_reminders(false);
             0
@@ -1062,31 +1210,39 @@ unsafe fn register(class: &str, proc_: unsafe extern "system" fn(HWND, u32, WPAR
     RegisterClassW(&wc);
 }
 
-fn main() {
+fn run_loop() {
     unsafe {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        let window_mode = args.iter().any(|a| a == "--window");
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let has = |a: &str| args.iter().any(|x| x == a);
+    if has("--uninstall") {
+        system::uninstall();
+        return;
+    }
+    unsafe {
+        let window_mode = has("--window");
         let tray_host = FindWindowW(w("SubscribityHost").as_ptr(), null());
-        if window_mode {
-            // Only one window process.
-            CreateMutexW(null(), 1, w("Local\\SubscribityWindowProcess").as_ptr());
-            if GetLastError() == ERROR_ALREADY_EXISTS {
+        let mutex = if window_mode { "Local\\SubscribityWindowProcess" } else { "Local\\SubscribityTrayApp" };
+        CreateMutexW(null(), 1, w(mutex).as_ptr());
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            if window_mode {
                 let h = find_window();
                 if !h.is_null() {
                     ShowWindow(h, SW_RESTORE);
                     SetForegroundWindow(h);
                 }
-                return;
+            } else if !tray_host.is_null() {
+                PostMessageW(tray_host, WM_OPEN, 0, 0);
             }
-        } else {
-            // One tray instance only; a second launch opens the window.
-            CreateMutexW(null(), 1, w("Local\\SubscribityTrayApp").as_ptr());
-            if GetLastError() == ERROR_ALREADY_EXISTS {
-                if !tray_host.is_null() {
-                    PostMessageW(tray_host, WM_OPEN, 0, 0);
-                }
-                return;
-            }
+            return;
         }
         SetProcessDpiAwarenessContext(-4isize as _ /* per-monitor v2 */);
         let hinst = GetModuleHandleW(null()) as HINSTANCE;
@@ -1095,9 +1251,9 @@ fn main() {
 
         APP = Box::into_raw(Box::new(App {
             hinst,
+            host: null_mut(),
             tray: tray_host,
             window_mode,
-            host: null_mut(),
             win: null_mut(),
             webview: None,
             pending: Vec::new(),
@@ -1113,55 +1269,46 @@ fn main() {
             scale: GetDpiForSystem() as f32 / 96.0,
         }));
         let a = app();
+        let exe_icon = LoadIconW(hinst, 1 as _);
 
         if window_mode {
-            register("SubscribityWindow", win_proc, hinst, make_icon(0));
-            let open_msg = if args.iter().any(|x| x == "--add") {
-                Some(json!({"type": "open", "page": "subs", "add": true}))
-            } else if args.iter().any(|x| x == "--settings") {
-                Some(json!({"type": "open", "page": "settings"}))
+            register("SubscribityWindow", win_proc, hinst, exe_icon);
+            let code = if has("--add") {
+                2
+            } else if has("--settings") {
+                1
             } else {
-                None
+                args.iter().find_map(|x| x.strip_prefix("--edit=")).and_then(|id| id.parse::<usize>().ok()).map_or(0, |id| 1000 + id)
             };
-            create_window(open_msg);
-            let mut msg: MSG = std::mem::zeroed();
-            while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
+            create_window(code);
+            run_loop();
             return;
         }
 
         a.icon = make_icon(0);
         a.badge = 0;
-        register("SubscribityHost", host_proc, hinst, null_mut());
-        a.host =CreateWindowExW(0, w("SubscribityHost").as_ptr(), w(APP_NAME).as_ptr(), 0, 0, 0, 0, 0, null_mut(), null_mut(), hinst, null());
+        register("SubscribityHost", host_proc, hinst, exe_icon);
+        a.host = CreateWindowExW(0, w("SubscribityHost").as_ptr(), w(APP_NAME).as_ptr(), 0, 0, 0, 0, 0, null_mut(), null_mut(), hinst, null());
         a.tray = a.host;
         tray_add();
-        if let Ok(exe) = std::env::current_exe() {
-            update::cleanup_old(&exe);
+        update::cleanup_old(&system::exe());
+        if first_run {
+            a.store.edit_settings(|_| {});
+            system::set_autostart(true);
         }
-        if args.iter().any(|x| x == "--updated") {
+        system::ensure_integration();
+        if has("--updated") {
             notify(&format!("{} updated", APP_NAME), &format!("You now have version {}.", VERSION));
         }
-
-        if first_run {
-            a.store.save_settings();
-            set_autostart(true);
-        }
+        housekeeping();
         check_reminders(true);
         maybe_fetch_rates(false);
-        SetTimer(a.host, TIMER_TICK, 10 * 60 * 1000, None); // every 10 minutes
         maybe_check_updates(false);
-        if first_run || args.iter().any(|x| x == "--open") {
-            open_window(None, false);
+        SetTimer(a.host, TIMER_TICK, 10 * 60 * 1000, None);
+        if first_run || has("--open") {
+            open_window(0);
         }
         trim_memory();
-
-        let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+        run_loop();
     }
 }
