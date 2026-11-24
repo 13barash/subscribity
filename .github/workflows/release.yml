@@ -1,0 +1,52 @@
+# Builds Subscribity.exe and publishes a GitHub release when a version tag is pushed.
+# The app's updater downloads Subscribity.exe and checks it against Subscribity.exe.sha256.
+#
+# To release:  bump `version` in Cargo.toml, commit, then
+#   git tag v0.2.0 && git push origin main v0.2.0
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match Cargo.toml version $version"
+          }
+
+      - name: Install Rust
+        shell: pwsh
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/subscribity.exe dist/Subscribity.exe
+          (Get-FileHash dist/Subscribity.exe -Algorithm SHA256).Hash.ToLower() | Set-Content -NoNewline -Encoding ascii dist/Subscribity.exe.sha256
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Subscribity.exe
+            dist/Subscribity.exe.sha256
+          generate_release_notes: true

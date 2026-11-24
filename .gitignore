@@ -1,0 +1,6 @@
+/target
+# personal data written next to the exe when running from the repo
+*.tsv
+settings.ini
+subscriptions-export.csv
+*.tmp

@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Subscribity</title>
+<style>
+:root {
+  --bg: #f4f5fb; --panel: #ffffff; --panel2: #f0f1f8; --line: #e3e5f0;
+  --text: #1b1d2a; --muted: #6b6f85; --accent: #5b5bf0; --accent2: #8b5cf6;
+  --accent-soft: #ecebff; --ok: #12a66a; --warn: #e8890c; --bad: #e5484d;
+  --shadow: 0 1px 2px rgba(20,22,40,.06), 0 4px 16px rgba(20,22,40,.06);
+  --radius: 14px;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #12131a; --panel: #1b1d27; --panel2: #232634; --line: #2d3042;
+  --text: #ecedf5; --muted: #9a9db3; --accent: #7c7cff; --accent2: #a78bfa;
+  --accent-soft: #2a2a4a; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  background: var(--bg); color: var(--text); display: flex; overflow: hidden;
+  user-select: none; -webkit-user-select: none;
+}
+input, select, textarea, button { font: inherit; color: inherit; }
+input, textarea { user-select: text; -webkit-user-select: text; }
+svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+/* sidebar */
+nav {
+  width: 200px; flex: none; background: var(--panel); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; padding: 18px 12px; gap: 4px;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; padding: 4px 10px 18px; }
+.logo { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent2)); font-weight: 800; }
+nav button {
+  display: flex; align-items: center; gap: 12px; border: 0; background: none; padding: 10px 12px;
+  border-radius: 10px; color: var(--muted); cursor: pointer; text-align: left; font-weight: 500;
+}
+nav button:hover { background: var(--panel2); color: var(--text); }
+nav button.active { background: var(--accent-soft); color: var(--accent); }
+nav .spacer { flex: 1; }
+nav .foot { font-size: 12px; color: var(--muted); padding: 0 12px; }
+
+main { flex: 1; overflow-y: auto; padding: 24px 28px 40px; }
+.page { display: none; max-width: 1000px; margin: 0 auto; }
+.page.active { display: block; animation: fade .18s ease; }
+@keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+h1 { font-size: 22px; margin: 0; font-weight: 700; }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.sub { color: var(--muted); font-size: 13px; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--panel);
+  padding: 8px 14px; border-radius: 10px; cursor: pointer; font-weight: 600; white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; border: 0; }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.danger { color: var(--bad); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* summary cards */
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+.card .k { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.card .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
+.card .h { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* toolbar */
+.toolbar { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.field { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; }
+.field:focus-within { border-color: var(--accent); }
+.field input, .field select { border: 0; outline: 0; background: transparent; padding: 8px 0; }
+.field.grow { flex: 1; min-width: 180px; }
+.field.grow input { width: 100%; }
+select option { background: var(--panel); }
+
+/* subscription list */
+.list { display: flex; flex-direction: column; gap: 8px; }
+.row {
+  display: grid; grid-template-columns: 44px 1fr auto auto; align-items: center; gap: 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px;
+  cursor: pointer; box-shadow: var(--shadow); transition: border-color .12s, transform .12s;
+}
+.row:hover { border-color: var(--accent); transform: translateY(-1px); }
+.row.paused { opacity: .55; }
+.avatar { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; color: #fff; font-size: 17px; overflow: hidden; position: relative; }
+.avatar img { width: 28px; height: 28px; border-radius: 6px; background: #fff; padding: 2px; }
+.name { font-weight: 650; font-size: 15px; }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+.tag { font-size: 11.5px; padding: 1px 8px; border-radius: 99px; background: var(--panel2); color: var(--muted); }
+.when { text-align: right; font-size: 13px; }
+.when .d { font-weight: 600; }
+.pill { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 1px 8px; border-radius: 99px; margin-top: 2px; background: var(--panel2); color: var(--muted); }
+.pill.soon { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.pill.today { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.price { text-align: right; min-width: 110px; }
+.price .p { font-weight: 700; font-size: 16px; }
+.price .c { font-size: 12px; color: var(--muted); }
+.empty { text-align: center; padding: 60px 20px; color: var(--muted); background: var(--panel); border: 1px dashed var(--line); border-radius: var(--radius); }
+.empty .big { font-size: 40px; }
+
+/* calendar */
+.cal { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+.cal-grid .dow { padding: 8px; font-size: 12px; font-weight: 700; color: var(--muted); text-align: center; border-bottom: 1px solid var(--line); }
+.day { min-height: 92px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 6px; font-size: 12px; }
+.day:nth-child(7n) { border-right: 0; }
+.day.out { background: var(--panel2); opacity: .5; }
+.day.now .n { background: var(--accent); color: #fff; border-radius: 99px; padding: 0 7px; }
+.day .n { font-weight: 700; display: inline-block; margin-bottom: 4px; }
+.ev { display: block; border-radius: 6px; padding: 2px 6px; margin-bottom: 3px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; font-weight: 600; }
+
+/* stats */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); }
+.panel h3 { margin: 0 0 12px; font-size: 14px; }
+.bar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 10px; align-items: center; margin-bottom: 9px; font-size: 13px; }
+.bar .track { height: 10px; background: var(--panel2); border-radius: 99px; overflow: hidden; }
+.bar .fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+.bar .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar .amt { text-align: right; font-weight: 600; }
+.donut-wrap { display: flex; gap: 18px; align-items: center; }
+.legend div { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 5px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.up { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.up:last-child { border: 0; }
+
+/* settings */
+.set { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.set:last-child { border: 0; }
+.set .t { font-weight: 600; }
+.seg { display: inline-flex; background: var(--panel2); border-radius: 10px; padding: 3px; }
+.seg button { border: 0; background: none; padding: 6px 12px; border-radius: 8px; cursor: pointer; color: var(--muted); font-weight: 600; }
+.seg button.on { background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.switch { position: relative; width: 42px; height: 24px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; background: var(--line); border-radius: 99px; cursor: pointer; transition: .15s; }
+.switch span::after { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .15s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(18px); }
+
+/* modal */
+.scrim { position: fixed; inset: 0; background: rgba(10,12,25,.45); display: none; align-items: center; justify-content: center; z-index: 10; backdrop-filter: blur(2px); }
+.scrim.open { display: flex; animation: fade .15s; }
+.modal { background: var(--panel); border-radius: 18px; width: min(560px, 94vw); max-height: 92vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.3); padding: 22px; }
+.modal h2 { margin: 0 0 16px; font-size: 18px; }
+.form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+.form label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.form .full { grid-column: 1 / -1; }
+.form input, .form select, .form textarea {
+  border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 9px 11px; outline: 0; color: var(--text); font-weight: 400;
+}
+.form input:focus, .form select:focus, .form textarea:focus { border-color: var(--accent); }
+.inline { display: flex; gap: 8px; }
+.inline > * { flex: 1; }
+.inline > .n { flex: 0 0 80px; }
+.check { flex-direction: row !important; align-items: center; gap: 10px !important; color: var(--text) !important; }
+.actions { display: flex; gap: 8px; margin-top: 18px; }
+.actions .spacer { flex: 1; }
+.err { color: var(--bad); font-size: 13px; min-height: 18px; margin-top: 8px; }
+
+.banner { display: none; align-items: center; gap: 12px; max-width: 1000px; margin: 0 auto 16px; padding: 12px 16px;
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius: var(--radius); color: var(--text); }
+.banner.show { display: flex; }
+.banner > svg { color: var(--accent); }
+.banner .grow { flex: 1; }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-weight: 600; opacity: 0; transition: .2s; pointer-events: none; z-index: 20; }
+.toast.show { opacity: 1; }
+
+@media (max-width: 820px) {
+  nav { width: 64px; } nav button span, .brand span, nav .foot { display: none; }
+  .cards { grid-template-columns: repeat(2, 1fr); } .grid2 { grid-template-columns: 1fr; }
+  .row { grid-template-columns: 40px 1fr auto; } .row .when { display: none; }
+}
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand"><div class="logo">S</div><span>Subscribity</span></div>
+  <button data-page="subs" class="active"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18"/></svg><span>Subscriptions</span></button>
+  <button data-page="calendar"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18"/></svg><span>Calendar</span></button>
+  <button data-page="stats"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>Statistics</span></button>
+  <button data-page="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></button>
+  <div class="spacer"></div>
+  <div class="foot" id="foot"></div>
+</nav>
+
+<main>
+  <div class="banner" id="banner">
+    <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+    <div class="grow"><b id="banner-t"></b><div class="sub">Installs in a few seconds and keeps all your data.</div></div>
+    <button class="btn" onclick="send({cmd:'open_release'})">What's new</button>
+    <button class="btn primary" id="banner-btn" onclick="installUpdate()">Update now</button>
+  </div>
+  <!-- Subscriptions -->
+  <section class="page active" id="page-subs">
+    <div class="head">
+      <div><h1>Subscriptions</h1><div class="sub" id="subs-sub"></div></div>
+      <button class="btn primary" onclick="openEdit()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add subscription</button>
+    </div>
+    <div class="cards" id="cards"></div>
+    <div class="toolbar">
+      <div class="field grow"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="q" placeholder="Search" oninput="renderSubs()"></div>
+      <div class="field"><select id="f-cat" onchange="renderSubs()"></select></div>
+      <div class="field"><select id="f-pay" onchange="renderSubs()"></select></div>
+      <div class="field"><select id="f-sort" onchange="renderSubs()">
+        <option value="next">Sort: next payment</option><option value="name">Sort: name</option>
+        <option value="price">Sort: price (monthly)</option><option value="priceDesc">Sort: price, high first</option>
+      </select></div>
+      <div class="field"><select id="f-state" onchange="renderSubs()">
+        <option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option>
+      </select></div>
+    </div>
+    <div class="list" id="list"></div>
+  </section>
+
+  <!-- Calendar -->
+  <section class="page" id="page-calendar">
+    <div class="head">
+      <div><h1 id="cal-title">Calendar</h1><div class="sub" id="cal-sub"></div></div>
+      <div style="display:flex;gap:6px">
+        <button class="btn" onclick="moveMonth(-1)">‹</button>
+        <button class="btn" onclick="moveMonth(0)">Today</button>
+        <button class="btn" onclick="moveMonth(1)">›</button>
+      </div>
+    </div>
+    <div class="cal"><div class="cal-grid" id="cal"></div></div>
+  </section>
+
+  <!-- Statistics -->
+  <section class="page" id="page-stats">
+    <div class="head"><div><h1>Statistics</h1><div class="sub">Active subscriptions, converted to your main currency</div></div></div>
+    <div class="cards" id="stat-cards"></div>
+    <div class="grid2">
+      <div class="panel"><h3>By category (per month)</h3><div id="by-cat"></div></div>
+      <div class="panel"><h3>By payment method (per month)</h3><div id="by-pay"></div></div>
+      <div class="panel"><h3>Share of monthly cost</h3><div class="donut-wrap" id="donut"></div></div>
+      <div class="panel"><h3>Next 30 days</h3><div id="upcoming"></div></div>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section class="page" id="page-settings">
+    <div class="head"><div><h1>Settings</h1></div></div>
+    <div class="panel">
+      <div class="set"><div><div class="t">Main currency</div><div class="sub">Totals and statistics are shown in this currency.</div></div>
+        <div class="field"><select id="s-cur" onchange="saveSettings()"></select></div></div>
+      <div class="set"><div><div class="t">Default reminder</div><div class="sub">Days before a renewal to notify you, for new subscriptions.</div></div>
+        <div class="field"><input id="s-remind" type="number" min="0" max="365" style="width:70px" onchange="saveSettings()"></div></div>
+      <div class="set"><div><div class="t">Theme</div></div>
+        <div class="seg" id="s-theme"><button data-v="system">System</button><button data-v="light">Light</button><button data-v="dark">Dark</button></div></div>
+      <div class="set"><div><div class="t">Start with Windows</div><div class="sub">Runs quietly in the tray and reminds you about renewals.</div></div>
+        <label class="switch"><input type="checkbox" id="s-auto" onchange="send({cmd:'autostart', on:this.checked})"><span></span></label></div>
+      <div class="set"><div><div class="t">Exchange rates</div><div class="sub" id="s-rates"></div></div>
+        <button class="btn" onclick="send({cmd:'rates'})">Update now</button></div>
+      <div class="set"><div><div class="t">Notifications</div><div class="sub">Windows notifications with sound, plus a badge on the tray icon.</div></div>
+        <button class="btn" onclick="send({cmd:'test_notify'})">Send a test</button></div>
+      <div class="set"><div><div class="t">Updates</div><div class="sub" id="s-update"></div></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+          <div class="seg" id="s-freq"><button data-v="weekly">Weekly</button><button data-v="monthly">Monthly</button><button data-v="off">Off</button></div>
+          <button class="btn" id="s-check" onclick="send({cmd:'update_check'})">Check now</button>
+          <button class="btn primary" id="s-install" onclick="installUpdate()">Install update</button>
+        </div></div>
+      <div class="set"><div><div class="t">Your data</div><div class="sub">Plain text files next to the app. Copy the folder to back up.</div></div>
+        <div style="display:flex;gap:8px"><button class="btn" onclick="send({cmd:'export'})">Export CSV</button><button class="btn" onclick="send({cmd:'open_folder'})">Open folder</button></div></div>
+    </div>
+  </section>
+</main>
+
+<!-- Add / edit -->
+<div class="scrim" id="scrim" onmousedown="if(event.target===this)closeEdit()">
+  <div class="modal">
+    <h2 id="m-title">Add subscription</h2>
+    <div class="form">
+      <label class="full">Name<input id="e-name" maxlength="80" placeholder="Netflix, Spotify, iCloud…"></label>
+      <label>Price<input id="e-price" inputmode="decimal" placeholder="9.99"></label>
+      <label>Currency<select id="e-cur"></select></label>
+      <label>Billed every<div class="inline"><input class="n" id="e-every" type="number" min="1" max="999" value="1"><select id="e-unit">
+        <option value="0">Day(s)</option><option value="1">Week(s)</option><option value="2" selected>Month(s)</option><option value="3">Year(s)</option></select></div></label>
+      <label><span id="e-date-l">Next payment</span><input id="e-date" type="date"></label>
+      <label>Category<input id="e-cat" list="dl-cat" maxlength="40" placeholder="Streaming"></label>
+      <label>Payment method<input id="e-pay" list="dl-pay" maxlength="40" placeholder="Visa •• 4242"></label>
+      <label>Remind me (days before)<input id="e-remind" type="number" min="0" max="365"></label>
+      <label>Website (for the icon)<input id="e-url" maxlength="200" placeholder="netflix.com"></label>
+      <label class="full">Notes<textarea id="e-notes" rows="2" maxlength="500"></textarea></label>
+      <label class="check full"><span class="switch"><input type="checkbox" id="e-active" checked><span></span></span>Active</label>
+    </div>
+    <div class="err" id="e-err"></div>
+    <div class="actions">
+      <button class="btn danger" id="e-del" onclick="delSub()">Delete</button>
+      <div class="spacer"></div>
+      <button class="btn" onclick="closeEdit()">Cancel</button>
+      <button class="btn primary" onclick="saveSub()">Save</button>
+    </div>
+  </div>
+</div>
+<datalist id="dl-cat"></datalist><datalist id="dl-pay"></datalist>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+let S = null;               // state from the app
+let editing = 0;            // id being edited, 0 = new
+let confirmDel = false;
+let cal = null;             // {y, m}
+const $ = id => document.getElementById(id);
+const send = o => window.ipc.postMessage(JSON.stringify(o));
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const PALETTE = ["#5b5bf0","#8b5cf6","#ec4899","#f97316","#14b8a6","#0ea5e9","#22c55e","#eab308","#ef4444","#6366f1"];
+const color = s => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; };
+const UNIT = [["day","days"],["week","weeks"],["month","months"],["year","years"]];
+
+function money(v, cur) {
+  if (v == null || isNaN(v)) return "–";
+  try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(v); }
+  catch { return v.toFixed(2) + " " + cur; }
+}
+const mainMoney = v => money(v, S.settings.main);
+function cycle(s) {
+  const n = s.every;
+  if (n === 1) return ["Daily","Weekly","Monthly","Yearly"][s.unit];
+  return `Every ${n} ${UNIT[s.unit][1]}`;
+}
+function fmtDate(iso, opts) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, opts || { day: "numeric", month: "short", year: "numeric" });
+}
+function dueLabel(s) {
+  if (!s.active) return `<span class="pill">Paused</span>`;
+  const l = s.left, cls = l === 0 ? "today" : l <= s.remind ? "soon" : "";
+  const t = l === 0 ? "Today" : l === 1 ? "Tomorrow" : `in ${l} days`;
+  return `<span class="pill ${cls}">${t}</span>`;
+}
+function domain(u) {
+  u = String(u || "").trim(); if (!u) return "";
+  try { return new URL(/^https?:\/\//i.test(u) ? u : "https://" + u).hostname; } catch { return ""; }
+}
+function avatar(s) {
+  const d = domain(s.url), bg = color(s.name);
+  const letter = esc((s.name.trim()[0] || "?").toUpperCase());
+  const img = d ? `<img src="https://icons.duckduckgo.com/ip3/${esc(d)}.ico" alt="" onerror="this.remove()">` : "";
+  return `<div class="avatar" style="background:${bg}">${img || letter}</div>`;
+}
+function toast(t) { const e = $("toast"); e.textContent = t; e.classList.add("show"); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove("show"), 1800); }
+
+// ---------- messages from the app ----------
+window.__recv = msg => {
+  if (msg.type === "state") { S = msg; applyTheme(); renderAll(); }
+  else if (msg.type === "calendar") renderCalendar(msg);
+  else if (msg.type === "toast") toast(msg.text);
+  else if (msg.type === "error") { $("e-err").textContent = msg.text; }
+  else if (msg.type === "saved") { closeEdit(); toast(msg.text); }
+  else if (msg.type === "open") { if (msg.page) go(msg.page); if (msg.add) openEdit(); }
+};
+
+function applyTheme() {
+  let t = S.settings.theme;
+  if (t === "system") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.dataset.theme = t;
+  document.querySelectorAll("#s-theme button").forEach(b => b.classList.toggle("on", b.dataset.v === S.settings.theme));
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => S && applyTheme());
+
+function renderAll() {
+  $("foot").textContent = "v" + S.version;
+  fillFilters(); renderSubs(); renderStats(); renderSettings();
+  if (cal) send({ cmd: "calendar", y: cal.y, m: cal.m });
+}
+
+// ---------- subscriptions ----------
+function uniq(key) { return [...new Set(S.subs.map(s => s[key]).filter(Boolean))].sort((a, b) => a.localeCompare(b)); }
+function fillSelect(el, items, first) {
+  const v = el.value;
+  el.innerHTML = `<option value="">${first}</option>` + items.map(i => `<option>${esc(i)}</option>`).join("");
+  el.value = items.includes(v) ? v : "";
+}
+function fillFilters() {
+  const cats = uniq("category"), pays = uniq("payment");
+  fillSelect($("f-cat"), cats, "All categories");
+  fillSelect($("f-pay"), pays, "All payment methods");
+  $("dl-cat").innerHTML = cats.map(c => `<option value="${esc(c)}">`).join("");
+  $("dl-pay").innerHTML = pays.map(c => `<option value="${esc(c)}">`).join("");
+}
+function totals() {
+  let m = 0, missing = false;
+  for (const s of S.subs) if (s.active) { if (s.monthlyMain == null) missing = true; else m += s.monthlyMain; }
+  return { m, missing };
+}
+function renderSubs() {
+  const active = S.subs.filter(s => s.active);
+  const { m, missing } = totals();
+  const week = active.filter(s => s.left <= 7);
+  const weekSum = week.reduce((a, s) => a + (s.priceMain ?? 0), 0);
+  $("subs-sub").textContent = `${active.length} active · ${S.subs.length - active.length} paused`;
+  $("cards").innerHTML = [
+    ["Per month", mainMoney(m), missing ? "Some exchange rates missing" : "All active subscriptions"],
+    ["Per year", mainMoney(m * 12), "At the current prices"],
+    ["Due in 7 days", mainMoney(weekSum), `${week.length} payment${week.length === 1 ? "" : "s"}`],
+    ["Active", String(active.length), active.length ? `Avg ${mainMoney(m / active.length)}/month` : "Nothing yet"],
+  ].map(([k, v, h]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="h">${h}</div></div>`).join("");
+
+  const q = $("q").value.trim().toLowerCase(), fc = $("f-cat").value, fp = $("f-pay").value;
+  const st = $("f-state").value, sort = $("f-sort").value;
+  let list = S.subs.filter(s =>
+    (!q || [s.name, s.category, s.payment, s.notes].join(" ").toLowerCase().includes(q)) &&
+    (!fc || s.category === fc) && (!fp || s.payment === fp) &&
+    (st === "all" || (st === "active") === s.active));
+  const mm = s => s.monthlyMain ?? s.monthly;
+  list.sort((a, b) =>
+    sort === "name" ? a.name.localeCompare(b.name) :
+    sort === "price" ? mm(a) - mm(b) :
+    sort === "priceDesc" ? mm(b) - mm(a) :
+    (b.active - a.active) || (a.left - b.left) || a.name.localeCompare(b.name));
+
+  if (!S.subs.length) {
+    $("list").innerHTML = `<div class="empty"><div class="big">💳</div><h3>No subscriptions yet</h3><p>Add your first one and Subscribity will remind you before it renews.</p><button class="btn primary" onclick="openEdit()">Add subscription</button></div>`;
+    return;
+  }
+  if (!list.length) { $("list").innerHTML = `<div class="empty">Nothing matches your filters.</div>`; return; }
+  $("list").innerHTML = list.map(s => {
+    const tags = [s.category, s.payment].filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join("") || `<span class="tag">${cycle(s)}</span>`;
+    const conv = s.cur !== S.settings.main && s.priceMain != null ? `≈ ${mainMoney(s.priceMain)}` : cycle(s);
+    return `<div class="row ${s.active ? "" : "paused"}" onclick="openEdit(${s.id})">
+      ${avatar(s)}
+      <div><div class="name">${esc(s.name)}</div><div class="tags">${tags}</div></div>
+      <div class="when"><div class="d">${fmtDate(s.next)}</div>${dueLabel(s)}</div>
+      <div class="price"><div class="p">${money(s.price, s.cur)}</div><div class="c">${esc(conv)}</div></div>
+    </div>`;
+  }).join("");
+}
+
+// ---------- add / edit ----------
+function fillCurrencies(el, value) {
+  const list = [...S.currencies]; if (value && !list.includes(value)) list.push(value);
+  el.innerHTML = list.map(c => `<option>${c}</option>`).join(""); el.value = value;
+}
+function openEdit(id) {
+  const s = S.subs.find(x => x.id === id);
+  editing = s ? s.id : 0; confirmDel = false;
+  $("m-title").textContent = s ? "Edit subscription" : "Add subscription";
+  $("e-del").style.display = s ? "" : "none"; $("e-del").textContent = "Delete";
+  $("e-date-l").textContent = s ? "Next payment" : "First payment";
+  $("e-name").value = s?.name ?? "";
+  $("e-price").value = s ? String(s.price) : "";
+  fillCurrencies($("e-cur"), s?.cur ?? S.settings.main);
+  $("e-every").value = s?.every ?? 1;
+  $("e-unit").value = String(s?.unit ?? 2);
+  $("e-date").value = s ? s.next : S.today;
+  $("e-cat").value = s?.category ?? "";
+  $("e-pay").value = s?.payment ?? "";
+  $("e-remind").value = s?.remind ?? S.settings.remind;
+  $("e-url").value = s?.url ?? "";
+  $("e-notes").value = s?.notes ?? "";
+  $("e-active").checked = s ? s.active : true;
+  $("e-err").textContent = "";
+  $("scrim").classList.add("open");
+  setTimeout(() => $("e-name").focus(), 30);
+}
+function closeEdit() { $("scrim").classList.remove("open"); }
+function saveSub() {
+  const price = parseFloat($("e-price").value.replace(/\s/g, "").replace(/,(?=\d{1,2}$)/, ".").replace(/,/g, ""));
+  if (!$("e-name").value.trim()) { $("e-err").textContent = "Please enter a name."; return $("e-name").focus(); }
+  if (!(price >= 0)) { $("e-err").textContent = "Please enter a valid price, for example 9.99."; return $("e-price").focus(); }
+  if (!$("e-date").value) { $("e-err").textContent = "Please pick a payment date."; return $("e-date").focus(); }
+  send({ cmd: "save", sub: {
+    id: editing, name: $("e-name").value.trim(), price, cur: $("e-cur").value,
+    every: Math.max(1, parseInt($("e-every").value) || 1), unit: parseInt($("e-unit").value),
+    start: $("e-date").value, category: $("e-cat").value.trim(), payment: $("e-pay").value.trim(),
+    remind: Math.max(0, parseInt($("e-remind").value) || 0), url: $("e-url").value.trim(),
+    notes: $("e-notes").value, active: $("e-active").checked } });
+}
+function delSub() {
+  if (!confirmDel) { confirmDel = true; $("e-del").textContent = "Click again to delete"; return; }
+  send({ cmd: "delete", id: editing }); closeEdit();
+}
+document.addEventListener("keydown", e => {
+  if (!$("scrim").classList.contains("open")) return;
+  if (e.key === "Escape") closeEdit();
+  if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") saveSub();
+});
+
+// ---------- calendar ----------
+function moveMonth(d) {
+  const [ty, tm] = S.today.split("-").map(Number);
+  if (!cal || d === 0) cal = { y: ty, m: tm };
+  else { let m = cal.m + d, y = cal.y; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } cal = { y, m }; }
+  send({ cmd: "calendar", y: cal.y, m: cal.m });
+}
+function renderCalendar(c) {
+  if (!cal || c.y !== cal.y || c.m !== cal.m) return;
+  const first = new Date(c.y, c.m - 1, 1);
+  $("cal-title").textContent = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const total = c.events.reduce((a, e) => a + (e.priceMain ?? 0), 0);
+  $("cal-sub").textContent = `${c.events.length} payment${c.events.length === 1 ? "" : "s"} · ${mainMoney(total)}`;
+  const startDow = (first.getDay() + 6) % 7; // Monday first
+  const days = new Date(c.y, c.m, 0).getDate();
+  const [ty, tm, td] = S.today.split("-").map(Number);
+  const byDay = {};
+  for (const e of c.events) (byDay[e.day] ||= []).push(e);
+  let html = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => `<div class="dow">${d}</div>`).join("");
+  const cells = Math.ceil((startDow + days) / 7) * 7;
+  for (let i = 0; i < cells; i++) {
+    const d = i - startDow + 1;
+    if (d < 1 || d > days) { html += `<div class="day out"></div>`; continue; }
+    const now = c.y === ty && c.m === tm && d === td;
+    const evs = (byDay[d] || []).map(e => `<span class="ev" style="background:${color(e.name)}" title="${esc(e.name)} ${esc(money(e.price, e.cur))}" onclick="openEdit(${e.id})">${esc(e.name)}</span>`).join("");
+    html += `<div class="day ${now ? "now" : ""}"><span class="n">${d}</span>${evs}</div>`;
+  }
+  $("cal").innerHTML = html;
+}
+
+// ---------- statistics ----------
+function groupBy(key) {
+  const g = {};
+  for (const s of S.subs) if (s.active && s.monthlyMain != null) { const k = s[key] || "None"; g[k] = (g[k] || 0) + s.monthlyMain; }
+  return Object.entries(g).sort((a, b) => b[1] - a[1]);
+}
+function bars(entries) {
+  if (!entries.length) return `<div class="sub">No data yet.</div>`;
+  const max = entries[0][1] || 1;
+  return entries.map(([k, v]) => `<div class="bar"><div class="lbl">${esc(k)}</div><div class="track"><div class="fill" style="width:${Math.max(3, v / max * 100)}%"></div></div><div class="amt">${mainMoney(v)}</div></div>`).join("");
+}
+function renderStats() {
+  const active = S.subs.filter(s => s.active && s.monthlyMain != null);
+  const { m } = totals();
+  const top = [...active].sort((a, b) => b.monthlyMain - a.monthlyMain)[0];
+  const next30 = active.filter(s => s.left <= 30).sort((a, b) => a.left - b.left);
+  const sum30 = next30.reduce((a, s) => a + (s.priceMain ?? 0), 0);
+  $("stat-cards").innerHTML = [
+    ["Per month", mainMoney(m), ""], ["Per year", mainMoney(m * 12), ""],
+    ["Most expensive", top ? esc(top.name) : "–", top ? mainMoney(top.monthlyMain) + "/month" : ""],
+    ["Next 30 days", mainMoney(sum30), `${next30.length} payments`],
+  ].map(([k, v, h]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="h">${h}</div></div>`).join("");
+  $("by-cat").innerHTML = bars(groupBy("category"));
+  $("by-pay").innerHTML = bars(groupBy("payment"));
+
+  // donut of top subscriptions
+  const parts = [...active].sort((a, b) => b.monthlyMain - a.monthlyMain);
+  const shown = parts.slice(0, 6), rest = parts.slice(6).reduce((a, s) => a + s.monthlyMain, 0);
+  const segs = shown.map(s => [s.name, s.monthlyMain, color(s.name)]);
+  if (rest > 0) segs.push(["Other", rest, "#9ca3af"]);
+  if (!segs.length || m <= 0) { $("donut").innerHTML = `<div class="sub">No data yet.</div>`; }
+  else {
+    let a0 = 0, paths = "";
+    const R = 52, r = 32, C = 60;
+    for (const [, v, col] of segs) {
+      const a1 = a0 + v / m * Math.PI * 2;
+      const big = a1 - a0 > Math.PI ? 1 : 0;
+      const p = (rad, ang) => [C + rad * Math.sin(ang), C - rad * Math.cos(ang)];
+      if (segs.length === 1) paths += `<circle cx="${C}" cy="${C}" r="${(R + r) / 2}" stroke="${col}" stroke-width="${R - r}" fill="none"/>`;
+      else {
+        const [x1, y1] = p(R, a0), [x2, y2] = p(R, a1), [x3, y3] = p(r, a1), [x4, y4] = p(r, a0);
+        paths += `<path d="M${x1} ${y1}A${R} ${R} 0 ${big} 1 ${x2} ${y2}L${x3} ${y3}A${r} ${r} 0 ${big} 0 ${x4} ${y4}Z" fill="${col}"/>`;
+      }
+      a0 = a1;
+    }
+    $("donut").innerHTML = `<svg viewBox="0 0 120 120" style="width:130px;height:130px;stroke:none">${paths}</svg>
+      <div class="legend">${segs.map(([n, v, col]) => `<div><i style="background:${col}"></i>${esc(n)} · ${Math.round(v / m * 100)}%</div>`).join("")}</div>`;
+  }
+  $("upcoming").innerHTML = next30.length ? next30.slice(0, 8).map(s =>
+    `<div class="up"><span>${esc(s.name)} <span class="sub">· ${fmtDate(s.next, { day: "numeric", month: "short" })}</span></span><b>${money(s.price, s.cur)}</b></div>`).join("")
+    : `<div class="sub">Nothing due in the next 30 days.</div>`;
+}
+
+// ---------- settings ----------
+function renderSettings() {
+  fillCurrencies($("s-cur"), S.settings.main);
+  $("s-remind").value = S.settings.remind;
+  $("s-auto").checked = S.settings.autostart;
+  $("s-rates").textContent = S.settings.ratesStatus;
+  const st = S.settings, busy = st.updateBusy;
+  $("s-update").textContent = st.updateStatus;
+  document.querySelectorAll("#s-freq button").forEach(b => b.classList.toggle("on", b.dataset.v === st.updateFreq));
+  $("s-install").style.display = st.latest ? "" : "none";
+  $("s-install").disabled = $("s-check").disabled = $("banner-btn").disabled = busy;
+  $("s-install").textContent = $("banner-btn").textContent = busy ? "Installing…" : st.latest ? `Install ${st.latest}` : "Install update";
+  $("banner").classList.toggle("show", !!st.latest);
+  $("banner-t").textContent = `Subscribity ${st.latest} is available`;
+}
+function saveSettings(theme) {
+  send({ cmd: "settings", main: $("s-cur").value, remind: Math.max(0, parseInt($("s-remind").value) || 0), theme: theme || S.settings.theme });
+}
+document.querySelectorAll("#s-theme button").forEach(b => b.onclick = () => saveSettings(b.dataset.v));
+document.querySelectorAll("#s-freq button").forEach(b => b.onclick = () => send({ cmd: "update_freq", freq: b.dataset.v }));
+function installUpdate() { toast("Downloading the update…"); send({ cmd: "update_install" }); }
+
+// ---------- navigation ----------
+function go(page) {
+  document.querySelectorAll("nav button[data-page]").forEach(b => b.classList.toggle("active", b.dataset.page === page));
+  document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.id === "page-" + page));
+  if (page === "calendar" && !cal) moveMonth(0);
+}
+document.querySelectorAll("nav button[data-page]").forEach(b => b.onclick = () => go(b.dataset.page));
+document.addEventListener("contextmenu", e => { if (!e.target.closest("input,textarea")) e.preventDefault(); });
+
+send({ cmd: "ready" });
+</script>
+</body>
+</html>
