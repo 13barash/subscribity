@@ -1,0 +1,20 @@
+From: "Anthropic, PBC" <invoice+statements@mail.anthropic.com>
+Subject: Your receipt from Anthropic, PBC #0000-1111-2222
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Anthropic, PBC
+Receipt from Anthropic, PBC =E2=82=AA300.72 Paid on November 8, 2026 with - 0000
+Receipt #0000-1111-2222 Nov 8=E2=80=93Dec 8, 2026
+Claude Ultra Qty 1 =E2=82=AA579.00
+Unused time on Claude Max after 08 Nov 2026 Qty 1 -=E2=82=AA278.28
+Total =E2=82=AA300.72
+Amount paid =E2=82=AA300.72
+--b1
+Content-Type: text/html; charset=utf-8
+
+<html><body><table><tr><td>Paid on November 8, 2026 with <img alt="Mastercard" src="https://example.com/mc.png"> - 0000</td></tr></table></body></html>
+--b1--

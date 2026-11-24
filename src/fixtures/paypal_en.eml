@@ -1,0 +1,16 @@
+Date: Tue, 24 Nov 2026 08:00:00 +0000
+To: user@example.com
+MIME-Version: 1.0
+From: "service@paypal.com" <service@paypal.com>
+Subject: Receipt for your payment to Acme Cloud Ltd
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+Hello User,
+You paid $9.99 USD to Acme Cloud Ltd
+This is an automatic payment.
+Transaction ID: 0000000000000000
+Transaction date: Nov 24, 2026
+Paid with: Visa x-0000
+Merchant: Acme Cloud Ltd, billing@example.com
+Total $9.99 USD

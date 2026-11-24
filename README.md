@@ -25,6 +25,9 @@ a few days before something renews, so you have time to cancel what you no longe
   renews, and price changes are remembered, so you can see when something got more expensive.
 - **Upcoming payments at a glance.** Click the tray icon for a quick look at what is due next,
   or open the full window for the calendar, statistics and settings.
+- **Find subscriptions you forgot about.** Connect your email (Gmail, Yahoo or iCloud) and
+  Subscribity looks through your receipts, then shows a list of the subscriptions it found.
+  You choose what to add. Works with your PayPal history too.
 - **Add things fast.** Ready-made templates for popular services, or type your own.
 - **Bring your list with you.** Import from a CSV or JSON file (for example an export from
   another subscription tracker) and export your list to CSV at any time.
@@ -66,7 +69,7 @@ Subscribity is built to stay out of your way:
 | Waiting in the tray | about 2 MB |
 | While the window is open | about 70–90 MB, all given back when you close it |
 
-The whole app is a single file under 1 MB. No installer, no background services.
+The whole app is a single file of about 1 MB. No installer, no background services.
 
 ## Updating
 
@@ -81,6 +84,39 @@ and the app updates and restarts by itself. Your subscriptions and settings are 
 - To move to another PC, copy the whole Subscribity folder and run `Subscribity.exe` from its
   new place.
 
+## Finding subscriptions in your email
+
+Subscribity can read the receipts in your mailbox and suggest the subscriptions it finds.
+It works with **Gmail, Yahoo Mail and iCloud Mail** (Outlook.com/Hotmail is not supported).
+
+**Connecting Gmail (about 2 minutes, only once):**
+
+1. In Subscribity, open **Settings → Find subscriptions in my email** and click
+   **Open app passwords page**.
+2. Google asks you to sign in. If it says app passwords aren't available, first turn on
+   **2-Step Verification** for your Google account, then come back to this page.
+3. Type a name such as `Subscribity` and click **Create**. Google shows a 16-letter password.
+4. Copy it, paste it into Subscribity together with your email address, and click **Connect**.
+
+Yahoo and iCloud work the same way: Subscribity opens the right page for you.
+
+**Scanning:** choose how far back to look (3 months to 2 years) and click **Scan**. You'll get
+a list like "Netflix, ₪54.90 monthly, last paid 15 Nov". For each one choose **Add**, **Edit**
+or **Skip**, or click **Add all high-confidence**. Subscriptions you already track are marked.
+You can also turn on a **weekly scan** that tells you when something new shows up (off by default).
+
+**PayPal:** PayPal receipts in your email are found automatically. You can also download your
+activity from PayPal (**Activity → Download**, CSV file) and choose **Import PayPal file**.
+
+**Is it safe?**
+- The app password only lets Subscribity read mail. Subscribity never sends, moves or deletes
+  anything.
+- Your emails are read on your own computer and never sent anywhere. Only the name, price and
+  date of each subscription are kept.
+- The password is stored encrypted, so only your Windows account can use it.
+- Click **Disconnect** to remove it from Subscribity, or delete it on Google's App passwords
+  page to cut off access instantly.
+
 ## Uninstalling
 
 Open **Settings → Uninstall** in the app, or go to Windows **Settings → Apps → Installed apps**,
@@ -92,8 +128,9 @@ No account, no sign-up, no ads, no tracking. Your list never leaves your compute
 The app only goes online to:
 
 - get today's exchange rates (only if you use more than one currency),
-- show the logo of a service (only if you entered its website),
-- check for updates.
+- show the logo of each subscription (from its website, or the App Store for apps),
+- check for updates,
+- read receipts from your own mailbox (only if you connect your email).
 
 ## Support Subscribity
 

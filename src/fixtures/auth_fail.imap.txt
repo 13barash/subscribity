@@ -1,0 +1,2 @@
+* OK Gimap ready for requests from 192.0.2.10 x12mb3456789abc
+A1 NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)

@@ -1,0 +1,17 @@
+Date: Tue, 24 Nov 2026 08:00:00 +0000
+To: user@example.com
+MIME-Version: 1.0
+From: Netflix <info@account.netflix.com>
+Subject: Your Netflix receipt
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html><head><meta charset=3D"utf-8"><title>Netflix</title><style>body { fon=
+t-family: Arial; color: #333; }</style></head>
+<body><table width=3D"100%" cellpadding=3D"0"><tr><td><p>Hi there,</p><p>Th=
+anks for your payment. Here is your receipt.</p></td></tr>
+<tr><td>Plan</td><td>Standard (Monthly)</td></tr>
+<tr><td>Payment method</td><td>Visa ending 0000</td></tr>
+<tr><td>Total</td><td>=E2=82=AA54.90</td></tr></table>
+<p>Your next billing date is December 24, 2026.</p><p>Questions? Visit the =
+Help Center.</p></body></html>

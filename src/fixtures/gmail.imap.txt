@@ -1,0 +1,48 @@
+* OK Gimap ready for requests from 192.0.2.10 x12mb3456789abc
+A1 OK test.user@example.com authenticated (Success)
+* CAPABILITY IMAP4rev1 UNSELECT IDLE NAMESPACE QUOTA ID XLIST CHILDREN X-GM-EXT-1 UIDPLUS COMPRESS=DEFLATE ENABLE MOVE CONDSTORE ESEARCH UTF8=ACCEPT LIST-EXTENDED LIST-STATUS LITERAL- SPECIAL-USE APPENDLIMIT=35651584
+A2 OK Success
+* LIST (\HasNoChildren) "/" "INBOX"
+* LIST (\HasChildren \Noselect) "/" "[Gmail]"
+* LIST (\HasNoChildren \Sent) "/" "[Gmail]/&BdAF0wXVBeg-"
+* LIST (\All \HasNoChildren) "/" "[Gmail]/&BdsF3AAg-&BdQF0wXVBdAF6A-"
+* LIST (\HasNoChildren \Trash) "/" "[Gmail]/&BdEF5wXR-"
+A3 OK Success
+* FLAGS (\Answered \Flagged \Draft \Deleted \Seen $NotPhishing $Phishing)
+* OK [PERMANENTFLAGS ()] Flags permitted.
+* OK [UIDVALIDITY 7] UIDs valid.
+* 1203 EXISTS
+* 0 RECENT
+* OK [UIDNEXT 9301] Predicted next UID.
+* OK [HIGHESTMODSEQ 4712345]
+A4 OK [READ-ONLY] [Gmail]/All Mail selected. (Success)
+* SEARCH 101 105 230 99
+A5 OK SEARCH completed (Success)
++ go ahead
+* SEARCH 230 240
+A6 OK SEARCH completed (Success)
+* SEARCH 250 101
+A7 OK SEARCH completed (Success)
+* 1 FETCH (UID 240 INTERNALDATE " 4-Nov-2026 23:59:59 -0800" BODY[HEADER.FIELDS (FROM SUBJECT CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] <<<
+From: Netflix <info@account.netflix.com>
+Subject: Your Netflix receipt
+Content-Type: text/plain; charset=utf-8
+
+
+>>> BODY[TEXT]<0> <<<
+Total charged: $15.49
+Next billing date: December 4, 2026
+>>>)
+* 2 FETCH (BODY[TEXT]<0> <<<
+Thanks for your payment of 29.90 ILS (with "quotes" and a ) paren).
+>>> INTERNALDATE "01-Oct-2026 08:00:00 +0300" UID 230 FLAGS (\Seen) BODY[HEADER.FIELDS (FROM SUBJECT CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] <<<
+From: Spotify <no-reply@spotify.com>
+Subject: Your receipt
+
+
+>>>)
+* 7 FETCH (FLAGS (\Seen))
+* 3 FETCH (UID 105 INTERNALDATE "15-Sep-2026 12:00:00 +0000" BODY[HEADER.FIELDS (FROM SUBJECT CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] "" BODY[TEXT]<0> NIL)
+A8 OK Success
+* BYE LOGOUT Requested
+A9 OK 73 good day (Success)

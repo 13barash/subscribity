@@ -25,20 +25,22 @@ pub struct Data {
     pub caption: String,
     pub budget: Option<(f32, String)>, // used/budget ratio, label
     pub items: Vec<Item>,
+    pub found: u32, // subscriptions found by the email scan, not reviewed yet
 }
 
 pub enum Action {
     Open,
     Add,
     Edit(u32),
+    Review,
 }
 
 struct State {
     hwnd: HWND,
     data: Data,
     hover: i32,
-    targets: Vec<(RECT, i32)>, // hit areas; i32: -1 open, -2 add, >=0 item index
-    fonts: [HFONT; 5],
+    targets: Vec<(RECT, i32)>, // hit areas; i32: -1 open, -2 add, -3 review, >=0 item index
+    fonts: [HFONT; 7], // 5, 6: Arial for ₪ (Segoe UI hints it into a box below ~18 px)
     scale: f32,
     closing: bool, // DestroyWindow already called (it re-enters via WM_ACTIVATE)
 }
@@ -106,13 +108,20 @@ pub fn toggle(hinst: HINSTANCE, scale: f32, anchor: (HWND, u32), data: impl FnOn
 }
 
 unsafe fn font(px: f32, weight: i32) -> HFONT {
-    CreateFontW(-(px.round() as i32), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, CLEARTYPE_QUALITY as u32, 0, w("Segoe UI").as_ptr())
+    face(px, weight, "Segoe UI")
+}
+
+unsafe fn face(px: f32, weight: i32, name: &str) -> HFONT {
+    CreateFontW(-(px.round() as i32), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, CLEARTYPE_QUALITY as u32, 0, w(name).as_ptr())
 }
 
 fn layout_height(d: &Data) -> i32 {
     let mut y = 78;
     if d.budget.is_some() {
         y += 34;
+    }
+    if d.found > 0 {
+        y += 40;
     }
     y += 28 + 46 * d.items.len().max(1) as i32;
     y + 1 + 12 + 34 + 14
@@ -180,7 +189,7 @@ unsafe fn show(hinst: HINSTANCE, scale: f32, anchor: (HWND, u32), data: Data) {
         hover: i32::MIN,
         closing: false,
         targets: Vec::new(),
-        fonts: [font(12.5 * scale, 400), font(26.0 * scale, 700), font(14.0 * scale, 600), font(12.0 * scale, 400), font(13.0 * scale, 600)],
+        fonts: [font(12.5 * scale, 400), font(26.0 * scale, 700), font(14.0 * scale, 700), font(12.0 * scale, 400), font(13.0 * scale, 700), face(14.0 * scale, 700, "Arial"), face(12.5 * scale, 400, "Arial")],
         scale,
     });
     ShowWindow(hwnd, SW_SHOW);
@@ -209,10 +218,45 @@ unsafe fn text(dc: HDC, t: &str, mut r: RECT, f: HFONT, color: u32, flags: u32) 
     SelectObject(dc, of);
 }
 
+/// Like `text`, but draws each ₪ with `fsym`: Segoe UI's hinted ₪ turns into a box at small sizes.
+/// Single line, DT_LEFT or DT_RIGHT, no ellipsis.
+unsafe fn text_sym(dc: HDC, t: &str, r: RECT, f: HFONT, fsym: HFONT, color: u32, flags: u32) {
+    if !t.contains('₪') {
+        return text(dc, t, r, f, color, flags);
+    }
+    let mut runs: Vec<(Vec<u16>, HFONT, i32)> = Vec::new();
+    for (i, part) in t.split('₪').enumerate() {
+        if i > 0 {
+            runs.push(("₪".encode_utf16().collect(), fsym, 0));
+        }
+        if !part.is_empty() {
+            runs.push((part.encode_utf16().collect(), f, 0));
+        }
+    }
+    let of = SelectObject(dc, f);
+    let mut total = 0;
+    for run in runs.iter_mut() {
+        SelectObject(dc, run.1);
+        let mut sz = SIZE { cx: 0, cy: 0 };
+        GetTextExtentPoint32W(dc, run.0.as_ptr(), run.0.len() as i32, &mut sz);
+        run.2 = sz.cx;
+        total += sz.cx;
+    }
+    SetTextColor(dc, color);
+    let mut x = if flags & DT_RIGHT != 0 { (r.right - total).max(r.left) } else { r.left };
+    for (v, fr, wd) in runs.iter_mut() {
+        SelectObject(dc, *fr);
+        let mut rr = RECT { left: x, top: r.top, right: (x + *wd).min(r.right), bottom: r.bottom };
+        DrawTextW(dc, v.as_mut_ptr(), v.len() as i32, &mut rr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        x += *wd;
+    }
+    SelectObject(dc, of);
+}
+
 unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
     let s = |v: i32| (v as f32 * st.scale).round() as i32;
     let rc = |x: i32, y: i32, w: i32, h: i32| RECT { left: s(x), top: s(y), right: s(x + w), bottom: s(y + h) };
-    let [f_small, f_big, f_name, f_sub, f_btn] = st.fonts;
+    let [f_small, f_big, f_name, f_sub, f_btn, f_name_sym, f_small_sym] = st.fonts;
     fill(dc, RECT { left: 0, top: 0, right: cw, bottom: ch }, BG, 0);
     SetBkMode(dc, TRANSPARENT as _);
     st.targets.clear();
@@ -226,8 +270,17 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
         fill(dc, rc(18, y + 2, 304, 6), LINE, s(6));
         let fw = (304.0 * ratio.clamp(0.0, 1.0)).max(6.0) as i32;
         fill(dc, rc(18, y + 2, fw, 6), if *ratio > 1.0 { RED } else { ACCENT }, s(6));
-        text(dc, label, rc(18, y + 12, 304, 18), f_small, if *ratio > 1.0 { RED } else { MUTED }, DT_LEFT);
+        text_sym(dc, label, rc(18, y + 12, 304, 18), f_small, f_small_sym, if *ratio > 1.0 { RED } else { MUTED }, DT_LEFT);
         y += 34;
+    }
+    if d.found > 0 {
+        let row = rc(8, y + 3, W_DIP - 16, 34);
+        fill(dc, row, if st.hover == -3 { HOVER } else { LINE }, s(10));
+        let n = if d.found == 1 { "1 new subscription found".to_string() } else { format!("{} new subscriptions found", d.found) };
+        text(dc, &n, rc(18, y + 3, 230, 34), f_name, TEXT, DT_LEFT);
+        text(dc, "Review", rc(246, y + 3, 76, 34), f_name, ACCENT, DT_RIGHT);
+        st.targets.push((row, -3));
+        y += 40;
     }
     fill(dc, rc(0, y, W_DIP, 1), LINE, 0);
     text(dc, "Upcoming", rc(18, y + 6, 200, 20), f_small, MUTED, DT_LEFT);
@@ -256,7 +309,7 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
         text(dc, &it.name, rc(58, y + 5, 170, 20), f_name, TEXT, DT_LEFT);
         let tone = match it.tone { 1 => ORANGE, 2 => RED, 3 => PURPLE, _ => MUTED };
         text(dc, &it.when, rc(58, y + 24, 170, 18), f_sub, tone, DT_LEFT);
-        text(dc, &it.price, rc(226, y + 5, 96, 20), f_name, TEXT, DT_RIGHT);
+        text_sym(dc, &it.price, rc(226, y + 5, 96, 20), f_name, f_name_sym, TEXT, DT_RIGHT);
         y += 46;
     }
     fill(dc, rc(0, y, W_DIP, 1), LINE, 0);
@@ -326,6 +379,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             let action = match hit(st, x, y) {
                 -1 => Some(Action::Open),
                 -2 => Some(Action::Add),
+                -3 => Some(Action::Review),
                 i if i >= 0 => st.data.items.get(i as usize).map(|it| Action::Edit(it.id)),
                 _ => None,
             };

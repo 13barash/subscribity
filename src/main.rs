@@ -11,8 +11,14 @@
 #![allow(non_snake_case, static_mut_refs, clippy::missing_safety_doc)]
 
 mod data;
+mod detect;
+mod imap;
+mod mime;
 mod popup;
+mod scan;
+mod services;
 mod system;
+mod tls;
 mod update;
 
 use data::*;
@@ -34,6 +40,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use wry::WebViewBuilderExtWindows;
 
 pub const APP_NAME: &str = "Subscribity";
+pub const SUPPORT_URL: &str = "https://buymeacoffee.com/13barash";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const UI_HTML: &str = include_str!("ui.html");
 
@@ -50,6 +57,7 @@ const WM_RELOAD: u32 = 0x8000 + 5; // window process -> tray: data changed on di
 const WM_OPENPAGE: u32 = 0x8000 + 7; // tray -> window: 1 settings, 2 add, 1000+id edit
 const WM_UPDATE: u32 = 0x8000 + 8;
 const WM_INSTALLED: u32 = 0x8000 + 9;
+const WM_SCAN: u32 = 0x8000 + 10; // scan thread -> window: wParam kind, lParam boxed result
 const TIMER_TICK: usize = 1;
 
 const M_OPEN: usize = 1;
@@ -78,6 +86,11 @@ struct App {
     update_busy: bool,
     today: i32,
     scale: f32,
+    scan: scan::Runtime,  // window process: email scan state
+    scan_new_seen: u32,   // tray: scan_new already announced
+    scan_err_seen: bool,  // tray: scan_error already announced
+    scan_try: i32,        // tray: day the auto-scan was last started
+    notice_page: usize,   // tray: open_window code for a click on the last notification
 }
 
 static mut APP: *mut App = null_mut();
@@ -247,6 +260,7 @@ fn notify(title: &str, body: &str) {
     if app().window_mode {
         return;
     }
+    app().notice_page = 0;
     let mut nid = tray_data();
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
@@ -391,6 +405,7 @@ fn popup_data() -> popup::Data {
             ((total / b) as f32, label)
         }),
         items: items.into_iter().take(6).map(|x| x.1).collect(),
+        found: st.settings.scan_new,
     }
 }
 
@@ -399,7 +414,37 @@ fn on_popup_action(action: popup::Action) {
         popup::Action::Open => open_window(0),
         popup::Action::Add => open_window(2),
         popup::Action::Edit(id) => open_window(1000 + id as usize),
+        popup::Action::Review => open_window(3),
     }
+}
+
+// ---------- email scan (tray side: start the weekly headless scan, announce results) ----------
+
+fn maybe_auto_scan() {
+    let a = app();
+    let s = &a.store.settings;
+    if s.scan_auto && s.scan_error.is_empty() && a.today - s.scan_last >= 7 && a.scan_try != a.today
+        && scan::store::has_key(&data_dir()) && !window_open()
+    {
+        a.scan_try = a.today; // a failed scan (offline) is retried the next day
+        shell_open(&system::exe().to_string_lossy(), Some("--scan"));
+    }
+}
+
+fn scan_notice() {
+    let a = app();
+    let (found, auth) = (a.store.settings.scan_new, a.store.settings.scan_error == "auth");
+    if found > a.scan_new_seen {
+        let text = if found == 1 { "1 new subscription found in your email".to_string() } else { format!("{} new subscriptions found in your email", found) };
+        notify(APP_NAME, &text);
+        a.notice_page = 3;
+    }
+    a.scan_new_seen = found;
+    if auth && !a.scan_err_seen {
+        notify(APP_NAME, "Email scan stopped: reconnect your email in Subscribity");
+        a.notice_page = 3;
+    }
+    a.scan_err_seen = auth;
 }
 
 // ---------- exchange rates ----------
@@ -622,7 +667,7 @@ fn find_window() -> HWND {
     unsafe { FindWindowW(w("SubscribityWindow").as_ptr(), null()) }
 }
 
-/// Tray side: show the window (codes: 0 main, 1 settings, 2 add, 1000+id edit).
+/// Tray side: show the window (codes: 0 main, 1 settings, 2 add, 3 scan review, 1000+id edit).
 fn open_window(code: usize) {
     let h = find_window();
     if !h.is_null() {
@@ -639,6 +684,7 @@ fn open_window(code: usize) {
         0 => "--window".to_string(),
         1 => "--window --settings".to_string(),
         2 => "--window --add".to_string(),
+        3 => "--window --found".to_string(),
         c => format!("--window --edit={}", c - 1000),
     };
     shell_open(&system::exe().to_string_lossy(), Some(&args));
@@ -648,6 +694,7 @@ fn open_msg(code: usize) -> Option<Value> {
     match code {
         1 => Some(json!({"type": "open", "page": "settings"})),
         2 => Some(json!({"type": "open", "page": "subs", "add": true})),
+        3 => Some(json!({"type": "open", "page": "scan"})),
         c if c >= 1000 => Some(json!({"type": "open", "page": "subs", "edit": c - 1000})),
         _ => None,
     }
@@ -827,6 +874,9 @@ fn state_json() -> Value {
         "backups": backups,
         "monthTotal": total,
         "currencies": CURRENCIES,
+        "templates": services::templates_json(),
+        "paypalColumns": detect::paypal::paypal_column_aliases(),
+        "scan": scan::state(),
         "settings": {
             "main": st.settings.main_cur,
             "remind": st.settings.default_remind,
@@ -936,6 +986,7 @@ fn handle_ipc(body: &str) {
             a.store.save_subs();
             send_js(&state_json());
             send_js(&json!({"type": "saved", "text": if existing.is_some() { "Saved" } else { "Subscription added" }}));
+            scan::subs_changed();
             after_change();
             maybe_fetch_rates(false);
         }
@@ -945,6 +996,7 @@ fn handle_ipc(body: &str) {
             a.store.save_subs();
             send_js(&state_json());
             send_js(&json!({"type": "toast", "text": "Deleted"}));
+            scan::subs_changed();
             after_change();
         }
         "import" => {
@@ -959,6 +1011,7 @@ fn handle_ipc(body: &str) {
             a.store.save_subs();
             send_js(&state_json());
             send_js(&json!({"type": "toast", "text": format!("Imported {} subscription{}", added, if added == 1 { "" } else { "s" })}));
+            scan::subs_changed();
             after_change();
             maybe_fetch_rates(false);
         }
@@ -1033,8 +1086,11 @@ fn handle_ipc(body: &str) {
             send_js(&state_json());
         }
         "open_release" => shell_open(&format!("https://github.com/{}/releases/latest", update::REPO), None),
+        "open_support" => shell_open(SUPPORT_URL, None),
         "uninstall" => shell_open(&system::exe().to_string_lossy(), Some("--uninstall")),
-        _ => {}
+        c => {
+            scan::handle_ipc(c, &msg);
+        }
     }
 }
 
@@ -1069,6 +1125,10 @@ unsafe extern "system" fn win_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
         }
         WM_INSTALLED => {
             on_installed(lp);
+            0
+        }
+        WM_SCAN => {
+            scan::on_message(wp, lp);
             0
         }
         WM_OPENPAGE => {
@@ -1134,7 +1194,7 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                     check_reminders(false);
                     popup::toggle(a.hinst, a.scale, (a.host, 1), popup_data, on_popup_action);
                 }
-                0x405 /* NIN_BALLOONUSERCLICK */ => open_window(0),
+                0x405 /* NIN_BALLOONUSERCLICK */ => open_window(a.notice_page),
                 0x205 /* WM_RBUTTONUP */ => tray_menu(),
                 _ => {}
             }
@@ -1153,6 +1213,7 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             housekeeping();
             check_reminders(true);
             maybe_fetch_rates(false);
+            scan_notice();
             trim_memory();
             0
         }
@@ -1163,6 +1224,7 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             check_reminders(true);
             maybe_fetch_rates(false);
             maybe_check_updates(false);
+            maybe_auto_scan();
             0
         }
         WM_RATES => {
@@ -1227,6 +1289,18 @@ fn main() {
         system::uninstall();
         return;
     }
+    if has("--scan") {
+        scan::headless(); // weekly auto-scan: no window, own mutex
+        return;
+    }
+    if has("--scan-dump") {
+        scan::dump(&args);
+        return;
+    }
+    if has("--mail-test-connect") {
+        scan::test_connect(&args);
+        return;
+    }
     unsafe {
         let window_mode = has("--window");
         let tray_host = FindWindowW(w("SubscribityHost").as_ptr(), null());
@@ -1267,6 +1341,11 @@ fn main() {
             update_busy: false,
             today: today(),
             scale: GetDpiForSystem() as f32 / 96.0,
+            scan: scan::Runtime::default(),
+            scan_new_seen: 0,
+            scan_err_seen: false,
+            scan_try: 0,
+            notice_page: 0,
         }));
         let a = app();
         let exe_icon = LoadIconW(hinst, 1 as _);
@@ -1275,6 +1354,8 @@ fn main() {
             register("SubscribityWindow", win_proc, hinst, exe_icon);
             let code = if has("--add") {
                 2
+            } else if has("--found") {
+                3
             } else if has("--settings") {
                 1
             } else {
@@ -1287,6 +1368,8 @@ fn main() {
 
         a.icon = make_icon(0);
         a.badge = 0;
+        a.scan_new_seen = a.store.settings.scan_new;
+        a.scan_err_seen = !a.store.settings.scan_error.is_empty();
         register("SubscribityHost", host_proc, hinst, exe_icon);
         a.host = CreateWindowExW(0, w("SubscribityHost").as_ptr(), w(APP_NAME).as_ptr(), 0, 0, 0, 0, 0, null_mut(), null_mut(), hinst, null());
         a.tray = a.host;
@@ -1304,6 +1387,7 @@ fn main() {
         check_reminders(true);
         maybe_fetch_rates(false);
         maybe_check_updates(false);
+        maybe_auto_scan();
         SetTimer(a.host, TIMER_TICK, 10 * 60 * 1000, None);
         if first_run || has("--open") {
             open_window(0);

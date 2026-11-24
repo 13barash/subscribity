@@ -1,0 +1,23 @@
+Date: Tue, 24 Nov 2026 08:00:00 +0000
+To: user@example.com
+MIME-Version: 1.0
+From: Spotify <no-reply@spotify.com>
+Subject: Your Spotify Premium receipt
+Content-Type: multipart/alternative;
+ boundary="sp1"
+
+--sp1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+VGhhbmtzIGZvciB5b3VyIHBheW1lbnQsIHVzZXIuClNwb3RpZnkgUHJlbWl1bSBJbmRpdmlkdWFs
+LCBiaWxsZWQgbW9udGhseS4KT3JkZXIgSUQ6IDAwMDAwMDAwMDAwClRvdGFsICQxMS45OQpQYXlt
+ZW50IG1ldGhvZDogTWFzdGVyY2FyZCBlbmRpbmcgMDAwMApZb3UgY2FuIGNhbmNlbCBhbnkgdGlt
+ZSBpbiB5b3VyIGFjY291bnQgcGFnZS4K
+--sp1
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: base64
+
+PGh0bWw+PGJvZHk+PHRhYmxlPjx0cj48dGQ+VG90YWw8L3RkPjx0ZD4kMTEuOTk8L3RkPjwvdHI+
+PC90YWJsZT48cD5UaGFua3MgZm9yIHlvdXIgcGF5bWVudC48L3A+PC9ib2R5PjwvaHRtbD4=
+--sp1--

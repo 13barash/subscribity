@@ -1,0 +1,14 @@
+From: Apple <no_reply@email.apple.com>
+Subject: Your receipt from Apple.
+Content-Type: text/html; charset=utf-8
+
+<html><body>
+<p>Receipt</p><p>14 November 2026</p><p>Order ID:</p><p>AAAA000000</p>
+<p>Apple Account:</p><p>user@example.com</p>
+<p>App Store</p><p>Acme Boost</p><p>Acme Boost</p><p>In-App Purchase</p><p>&#8362;9.14</p>
+<p>Apple Developer Program</p><p>Annual</p><p>Renews 14 November 2027</p><p>&#8362;324.90</p>
+<p>iCloud</p><p>iCloud+</p><p>iCloud+ with 2 TB of storage (Monthly)</p><p>Renews 16 December 2026</p><p>&#8362;39.90</p>
+<p>Billing and Payment</p><p>Jane Doe</p><p>1 Example St</p>
+<p>Mastercard &#8226;&#8226;&#8226;&#8226; 0000</p><p>&#8362;374.94</p>
+<p>Manage Subscriptions</p>
+</body></html>

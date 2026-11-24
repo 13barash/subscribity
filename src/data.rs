@@ -18,14 +18,19 @@ pub const EXPORT_FILE: &str = "subscriptions-export.csv";
 pub const BACKUP_DIR: &str = "backups";
 /// Every file the app writes in its folder, including temp files a crash can leave behind
 /// (`<name>.tmp` now, `<stem>.tmp` in v0.1.0). Uninstall deletes exactly these + `backups\`.
-pub const OWN_FILES: [&str; 15] = [
-    SUBS_FILE, SETTINGS_FILE, PAYMENTS_FILE, RATES_FILE, STATE_FILE, EXPORT_FILE,
+pub const OWN_FILES: [&str; 19] = [
+    SUBS_FILE, SETTINGS_FILE, PAYMENTS_FILE, RATES_FILE, STATE_FILE, EXPORT_FILE, SCAN_FILE, MAIL_KEY_FILE,
     "subscriptions.tsv.tmp", "settings.ini.tmp", "payments.tsv.tmp", "rates.tsv.tmp", "state.tsv.tmp",
+    "scan.tsv.tmp", "mail.key.tmp",
     "subscriptions.tmp", "settings.tmp", "rates.tmp", "state.tmp",
 ];
-const SETTINGS_KEYS: [&str; 11] = [
+/// Email scanner: results cache and the DPAPI-protected mailbox login (never in backups).
+pub const SCAN_FILE: &str = "scan.tsv";
+pub const MAIL_KEY_FILE: &str = "mail.key";
+const SETTINGS_KEYS: [&str; 16] = [
     "main_currency", "default_remind_days", "budget", "budget_alerted", "rates_base", "rates_date",
     "update_check", "update_last", "latest_version", "update_notified", "window",
+    "scan_auto", "scan_period", "scan_last", "scan_new", "scan_error",
 ];
 const BACKUP_EVERY_DAYS: i32 = 7;
 const BACKUP_KEEP_DAYS: i32 = 30;
@@ -69,6 +74,11 @@ pub struct Settings {
     pub latest_version: String,
     pub update_notified: String,
     pub window: (i32, i32, i32, i32), // x, y, width, height; width 0 = not saved
+    pub scan_auto: bool,    // weekly email scan from the tray (off by default)
+    pub scan_period: u32,   // months searched: 3, 6, 12 or 24
+    pub scan_last: i32,     // day of the last successful scan, 0 = never
+    pub scan_new: u32,      // candidates found by the last auto-scan, not reviewed yet
+    pub scan_error: String, // "auth": the auto-scan stopped until the user reconnects
 }
 
 impl Default for Settings {
@@ -85,6 +95,11 @@ impl Default for Settings {
             latest_version: String::new(),
             update_notified: String::new(),
             window: (0, 0, 0, 0),
+            scan_auto: false,
+            scan_period: 12,
+            scan_last: 0,
+            scan_new: 0,
+            scan_error: String::new(),
         }
     }
 }
@@ -143,7 +158,7 @@ fn days_in_month(y: i32, m: u32) -> u32 {
     }
 }
 
-fn add_months(start: i32, k: i32) -> i32 {
+pub fn add_months(start: i32, k: i32) -> i32 {
     let (y, m, d) = civil_from_days(start);
     let total = y * 12 + m as i32 - 1 + k;
     let ny = total.div_euclid(12);
@@ -258,11 +273,11 @@ pub fn money(v: f64, cur: &str) -> String {
 
 // ---------- storage ----------
 
-fn esc(s: &str) -> String {
+pub fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\t', "\\t").replace("\r\n", "\n").replace('\r', "\n").replace('\n', "\\n")
 }
 
-fn unesc(s: &str) -> String {
+pub fn unesc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars();
     while let Some(c) = it.next() {
@@ -288,11 +303,11 @@ fn tmp_path(path: &Path) -> PathBuf {
 
 /// Temp file + flush to disk + rename, so a crash or power cut leaves the old file or the
 /// new one, never a half-written or empty one.
-fn write_atomic(path: &Path, text: &str) -> bool {
+pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> bool {
     use std::io::Write;
     let tmp = tmp_path(path);
     let written = fs::File::create(&tmp).and_then(|mut f| {
-        f.write_all(text.as_bytes())?;
+        f.write_all(data.as_ref())?;
         f.sync_all()
     });
     written.is_ok() && fs::rename(&tmp, path).is_ok()
@@ -348,6 +363,11 @@ fn parse_settings(t: &str) -> Settings {
                     s.window = (n[0], n[1], n[2], n[3]);
                 }
             }
+            "scan_auto" => s.scan_auto = v == "weekly",
+            "scan_period" => s.scan_period = v.parse().ok().filter(|p| [3, 6, 12, 24].contains(p)).unwrap_or(12),
+            "scan_last" => s.scan_last = parse_iso(v).unwrap_or(0),
+            "scan_new" => s.scan_new = v.parse().unwrap_or(0),
+            "scan_error" => s.scan_error = v.into(),
             _ => {}
         }
     }
@@ -438,10 +458,12 @@ impl Store {
         let opt = |d: i32| if d > 0 { iso(d) } else { String::new() };
         let mut t = format!(
             "main_currency={}\ndefault_remind_days={}\nbudget={}\nbudget_alerted={}\nrates_base={}\nrates_date={}\n\
-             update_check={}\nupdate_last={}\nlatest_version={}\nupdate_notified={}\nwindow={},{},{},{}\n",
+             update_check={}\nupdate_last={}\nlatest_version={}\nupdate_notified={}\nwindow={},{},{},{}\n\
+             scan_auto={}\nscan_period={}\nscan_last={}\nscan_new={}\nscan_error={}\n",
             s.main_cur, s.default_remind, s.budget, s.budget_alerted as u8, s.rates_base, opt(s.rates_date),
             s.update_freq, opt(s.update_last), s.latest_version, s.update_notified,
-            s.window.0, s.window.1, s.window.2, s.window.3
+            s.window.0, s.window.1, s.window.2, s.window.3,
+            if s.scan_auto { "weekly" } else { "off" }, s.scan_period, opt(s.scan_last), s.scan_new, s.scan_error
         );
         t.push_str(&unknown_settings(&old));
         write_atomic(&self.dir.join(SETTINGS_FILE), &t);
@@ -796,6 +818,40 @@ mod tests {
         let s = read_settings(&dir);
         assert_eq!((s.main_cur.as_str(), s.budget, s.window), ("EUR", 50.0, (1, 2, 800, 600)));
         assert!(!dir.join("settings.ini.tmp").exists());
+        // v0.3.0 scan keys: defaults for a v0.1.0 file, then they round-trip and the old keys stay.
+        assert_eq!((s.scan_auto, s.scan_period, s.scan_last, s.scan_new, s.scan_error.as_str()), (false, 12, 0, 0, ""));
+        st.edit_settings(|s| {
+            s.scan_auto = true;
+            s.scan_period = 6;
+            s.scan_last = days_from_civil(2026, 11, 1);
+            s.scan_new = 3;
+            s.scan_error = "auth".into();
+        });
+        let s = read_settings(&dir);
+        assert_eq!((s.scan_auto, s.scan_period, s.scan_last, s.scan_new, s.scan_error.as_str()), (true, 6, days_from_civil(2026, 11, 1), 3, "auth"));
+        assert_eq!((s.main_cur.as_str(), s.window), ("EUR", (1, 2, 800, 600)));
+        let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
+        assert!(t.contains("theme=system\n") && t.matches("future_key").count() == 1 && t.matches("scan_auto=").count() == 1);
+        assert_eq!(parse_settings("scan_period=5\n").scan_period, 12);
+        assert!(!parse_settings("scan_auto=yes\n").scan_auto);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn uninstall_list_covers_scanner_files() {
+        for f in [SCAN_FILE, MAIL_KEY_FILE, "scan.tsv.tmp", "mail.key.tmp"] {
+            assert!(OWN_FILES.contains(&f), "{}", f);
+        }
+        // Backups never copy the mailbox login or the scan cache.
+        let dir = temp_dir("ownfiles");
+        let st = Store::load(dir.clone());
+        fs::write(dir.join(SUBS_FILE), "id\n").unwrap();
+        fs::write(dir.join(MAIL_KEY_FILE), "x").unwrap();
+        fs::write(dir.join(SCAN_FILE), "x").unwrap();
+        let d = days_from_civil(2026, 1, 1);
+        st.backup_if_due(d);
+        let b = dir.join(BACKUP_DIR).join(iso(d));
+        assert!(b.join(SUBS_FILE).exists() && !b.join(MAIL_KEY_FILE).exists() && !b.join(SCAN_FILE).exists());
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -1,0 +1,8 @@
+Date: Tue, 24 Nov 2026 08:00:00 +0000
+To: user@example.com
+MIME-Version: 1.0
+From: Netflix <info@mailer.netflix.com>
+Subject: Don't miss: 50% off your first 3 months
+Content-Type: text/html; charset=utf-8
+
+<html><body><h1>Come back to Netflix</h1><p>Get Premium for just $7.99/month for your first 3 months.</p><p>Limited time offer. Restart your membership today.</p><p><a href="https://example.com/u">Unsubscribe</a></p></body></html>

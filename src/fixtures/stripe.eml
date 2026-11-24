@@ -1,0 +1,8 @@
+Date: Tue, 24 Nov 2026 08:00:00 +0000
+To: user@example.com
+MIME-Version: 1.0
+From: Acme Notes <invoice+statements@stripe.com>
+Subject: Your receipt from Acme Notes #0000-0000
+Content-Type: text/html; charset=utf-8
+
+<html><body><h1>Receipt from Acme Notes</h1><p>Receipt #0000-0000</p><table><tr><td>Acme Notes Pro (monthly)</td><td>&euro;8.00</td></tr><tr><td>Amount paid</td><td>&euro;8.00</td></tr></table><p>Date paid: Nov 24, 2026</p><p>Payment method: Visa - 0000</p></body></html>
