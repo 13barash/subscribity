@@ -233,17 +233,21 @@ unsafe fn show(hinst: HINSTANCE, scale: f32, anchor: (HWND, u32), data: Data) {
     SetForegroundWindow(hwnd);
 }
 
-unsafe fn fill(dc: HDC, r: RECT, color: u32, radius: i32) {
+/// Fills `r`; `radius` > 0 = rounded corners (ellipse diameter), anti-aliased against `bg`, the
+/// colour behind the shape (see `aa`).
+unsafe fn fill(dc: HDC, r: RECT, color: u32, radius: i32, bg: u32) {
     let b = CreateSolidBrush(color);
-    let ob = SelectObject(dc, b);
-    let op = SelectObject(dc, GetStockObject(NULL_PEN));
     if radius > 0 {
-        RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius, radius);
+        crate::aa::paint(dc, r, bg, |big, m| {
+            let ob = SelectObject(big, b);
+            let op = SelectObject(big, GetStockObject(NULL_PEN));
+            RoundRect(big, m.x(r.left), m.y(r.top), m.x(r.right) + 1, m.y(r.bottom) + 1, m.len(radius), m.len(radius));
+            SelectObject(big, op);
+            SelectObject(big, ob);
+        });
     } else {
         FillRect(dc, &r, b);
     }
-    SelectObject(dc, op);
-    SelectObject(dc, ob);
     DeleteObject(b);
 }
 
@@ -294,13 +298,13 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
     let s = |v: i32| (v as f32 * st.scale).round() as i32;
     let rc = |x: i32, y: i32, w: i32, h: i32| RECT { left: s(x), top: s(y), right: s(x + w), bottom: s(y + h) };
     let [f_small, f_big, f_name, f_sub, f_btn, f_name_sym, f_small_sym] = st.fonts;
-    fill(dc, RECT { left: 0, top: 0, right: cw, bottom: ch }, BG, 0);
+    fill(dc, RECT { left: 0, top: 0, right: cw, bottom: ch }, BG, 0, BG);
     SetBkMode(dc, TRANSPARENT as _);
     st.targets.clear();
     let d = &st.data;
 
     // Hero block (total + budget) on a card. Radii below are true radii: RoundRect takes diameters.
-    fill(dc, rc(8, 6, W_DIP - 16, if d.budget.is_some() { 104 } else { 70 }), CARD, s(32));
+    fill(dc, rc(8, 6, W_DIP - 16, if d.budget.is_some() { 104 } else { 70 }), CARD, s(32), BG);
     if !st.logo.is_null() {
         DrawIconEx(dc, s(18), s(12), st.logo, s(20), s(20), 0, null_mut(), DI_NORMAL);
     }
@@ -308,28 +312,28 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
     text(dc, &d.caption, rc(100, 14, 182, 18), f_small, MUTED, DT_RIGHT);
     // Close button, top right (the popup also closes on Esc or a click outside).
     let x_btn = rc(290, 8, 32, 32);
-    fill(dc, x_btn, if st.hover == -4 { HOVER } else { LINE }, s(24));
+    fill(dc, x_btn, if st.hover == -4 { HOVER } else { LINE }, s(24), CARD);
     text(dc, "×", x_btn, f_big, if st.hover == -4 { TEXT } else { MUTED }, DT_CENTER);
     st.targets.push((x_btn, -4));
     text(dc, &d.total, rc(18, 34, 304, 36), f_big, TEXT, DT_LEFT);
     let mut y = 78;
     if let Some((ratio, label)) = &d.budget {
-        fill(dc, rc(18, y + 2, 304, 6), LINE, s(6));
+        fill(dc, rc(18, y + 2, 304, 6), LINE, s(6), CARD);
         let fw = (304.0 * ratio.clamp(0.0, 1.0)).max(6.0) as i32;
-        fill(dc, rc(18, y + 2, fw, 6), if *ratio > 1.0 { RED } else { ACCENT }, s(6));
+        fill(dc, rc(18, y + 2, fw, 6), if *ratio > 1.0 { RED } else { ACCENT }, s(6), CARD);
         text_sym(dc, label, rc(18, y + 12, 304, 18), f_small, f_small_sym, if *ratio > 1.0 { RED } else { MUTED }, DT_LEFT);
         y += 34;
     }
     if d.found > 0 {
         let row = rc(8, y + 3, W_DIP - 16, 34);
-        fill(dc, row, if st.hover == -3 { HOVER } else { CARD }, s(24));
+        fill(dc, row, if st.hover == -3 { HOVER } else { CARD }, s(24), BG);
         let n = if d.found == 1 { "1 new subscription found".to_string() } else { format!("{} new subscriptions found", d.found) };
         text(dc, &n, rc(18, y + 3, 230, 34), f_name, TEXT, DT_LEFT);
         text(dc, "Review", rc(246, y + 3, 76, 34), f_name, if st.hover == -3 { ACCENT_HOVER } else { ACCENT }, DT_RIGHT);
         st.targets.push((row, -3));
         y += 40;
     }
-    fill(dc, rc(0, y, W_DIP, 1), LINE, 0);
+    fill(dc, rc(0, y, W_DIP, 1), LINE, 0, BG);
     text(dc, "Upcoming", rc(18, y + 6, 200, 20), f_small, MUTED, DT_LEFT);
     y += 28;
     if d.items.is_empty() {
@@ -345,31 +349,26 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
             st.targets.push((pill, 100 + i as i32));
         }
         if st.hover == i as i32 {
-            fill(dc, row, HOVER, s(24));
+            fill(dc, row, HOVER, s(24), BG);
         }
         st.targets.push((row, i as i32));
+        let row_bg = if st.hover == i as i32 { HOVER } else { BG };
         let av = color_for(&it.name);
-        let a = rc(18, y + 8, 30, 30);
+        let a = rc(16, y + 5, 36, 36);
         let bmp = st.bmps.get(i).copied().unwrap_or(null_mut());
         if !bmp.is_null() {
-            crate::icons::draw(dc, a, bmp, av, s(20), s(3));
+            crate::icons::draw(dc, a, bmp, av, s(18), s(3), row_bg);
         } else {
-            let b = CreateSolidBrush(av);
-            let ob = SelectObject(dc, b);
-            let op = SelectObject(dc, GetStockObject(NULL_PEN));
-            RoundRect(dc, a.left, a.top, a.right + 1, a.bottom + 1, s(20), s(20));
-            SelectObject(dc, op);
-            SelectObject(dc, ob);
-            DeleteObject(b);
+            fill(dc, a, av, s(20), row_bg);
             let letter: String = it.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_else(|| "?".into());
             text(dc, &letter, a, f_name, 0x00FFFFFF, DT_CENTER);
         }
-        text(dc, &it.name, rc(58, y + 5, 170, 20), f_name, TEXT, DT_LEFT);
+        text(dc, &it.name, rc(62, y + 5, 166, 20), f_name, TEXT, DT_LEFT);
         let tone = match it.tone { 1 => ORANGE, 2 => RED, 3 => ACCENT, _ => MUTED };
-        text(dc, &it.when, rc(58, y + 24, if it.flag || it.unused { 134 } else { 170 }, 18), f_sub, tone, DT_LEFT);
+        text(dc, &it.when, rc(62, y + 24, if it.flag || it.unused { 130 } else { 166 }, 18), f_sub, tone, DT_LEFT);
         if pill_on {
             let hot = st.hover == 100 + i as i32;
-            fill(dc, pill, if hot { PILL_HOVER } else { LINE }, s(24));
+            fill(dc, pill, if hot { PILL_HOVER } else { LINE }, s(24), row_bg);
             text(dc, "Don't use it anymore", pill, f_sub, if hot { ACCENT_HOVER } else { ACCENT }, DT_CENTER);
         } else if it.unused {
             text(dc, "Unused", pill, f_sub, ORANGE, DT_RIGHT);
@@ -377,12 +376,12 @@ unsafe fn paint(st: &mut State, dc: HDC, cw: i32, ch: i32) {
         text_sym(dc, &it.price, rc(226, y + 5, 96, 20), f_name, f_name_sym, TEXT, DT_RIGHT);
         y += 46;
     }
-    fill(dc, rc(0, y, W_DIP, 1), LINE, 0);
+    fill(dc, rc(0, y, W_DIP, 1), LINE, 0, BG);
     y += 13;
     let open = rc(18, y, 196, 34);
     let add = rc(222, y, 100, 34);
-    fill(dc, open, if st.hover == -1 { ACCENT } else { PRIMARY }, s(24));
-    fill(dc, add, if st.hover == -2 { HOVER } else { LINE }, s(24));
+    fill(dc, open, if st.hover == -1 { ACCENT } else { PRIMARY }, s(24), BG);
+    fill(dc, add, if st.hover == -2 { HOVER } else { LINE }, s(24), BG);
     text(dc, "Open Subscribity", open, f_btn, BG, DT_CENTER);
     text(dc, "+ Add", add, f_btn, TEXT, DT_CENTER);
     st.targets.push((open, -1));

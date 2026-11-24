@@ -10,8 +10,10 @@
 #![windows_subsystem = "windows"]
 #![allow(non_snake_case, static_mut_refs, clippy::missing_safety_doc)]
 
+mod aa;
 mod actions;
 mod data;
+mod gdip;
 mod icons;
 mod detect;
 mod imap;

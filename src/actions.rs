@@ -148,7 +148,7 @@ pub fn site_key(site: &str) -> String {
     if host.contains('.') { services::registrable(host) } else { String::new() }
 }
 
-/// Window: `http://icon.localhost/<host>?v=N` → the cached 64x64 BMP of the host's registrable
+/// Window: `http://icon.localhost/<host>?v=N` → the cached 128x128 BMP of the host's registrable
 /// domain (200 `image/bmp`), else 404 so the page keeps its letter tile.
 pub fn icon_response(dir: &Path, uri_path: &str) -> Response<Cow<'static, [u8]>> {
     let key = site_key(uri_path.trim_start_matches('/'));

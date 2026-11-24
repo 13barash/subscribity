@@ -1,27 +1,31 @@
-//! Tray popup icons. A small cache of 64x64 24-bit BMPs (already composited on white) in
-//! `icons\` beside the data: `<fnv1a-64 hex of key>.bmp`, key = the sub's App Store artwork URL
-//! (mzstatic) or else its domain (favicon from DuckDuckGo). `<hash>.no` marks a failed fetch,
-//! retried after 7 days. A cache only: not backed up, unreferenced files pruned.
+//! App icons (tray popup + window). A small cache of 128x128 24-bit BMPs (already composited on
+//! white, small sources upscaled with bicubic) in `icons\` beside the data:
+//! `<fnv1a-64 hex of key>-2.bmp` (the `-2` = the 128 px generation; older 64 px `<hash>.bmp`
+//! files are pruned), key = the sub's App Store artwork URL (mzstatic) or else its domain
+//! (apple-touch-icon, else the DuckDuckGo favicon). `<hash>-2.no` marks a failed fetch, retried
+//! after 7 days. A cache only: not backed up, unreferenced files pruned.
 //! `fetch_missing` (network + GDI+ decode) runs only in the headless `--icons` helper; gdiplus.dll
 //! is loaded there on demand, never in the tray. The tray only calls `path`, `pending`, `load`
 //! and `draw` (plain file checks and GDI blits).
+use crate::gdip::Gdip;
 use crate::scan::appstore;
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::ptr::{null, null_mut};
+use std::ptr::null_mut;
 use std::time::{Duration, SystemTime};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconFromResourceEx, DestroyIcon, DrawIconEx, LoadImageW, DI_NORMAL, IMAGE_BITMAP, LR_CREATEDIBSECTION, LR_LOADFROMFILE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconFromResourceEx, DestroyIcon, LoadImageW, IMAGE_BITMAP, LR_CREATEDIBSECTION, LR_LOADFROMFILE};
 
 pub const DIR: &str = "icons";
 /// Held by the `--icons` helper while it runs (uninstall waits for it).
 pub const MUTEX: &str = "Local\\SubscribityIcons";
 pub const MAX_PER_RUN: usize = 8;
-const SIZE: i32 = 64;
+const SIZE: i32 = 128;
+/// Cache generation suffix of the file stem; 64 px files (no suffix) are pruned.
+const GEN: &str = "-2";
 const RETRY: Duration = Duration::from_secs(7 * 24 * 3600);
 
 fn fnv1a(s: &str) -> u64 {
@@ -30,7 +34,12 @@ fn fnv1a(s: &str) -> u64 {
 
 /// Cache file of `key` under the data folder `dir`.
 pub fn path(dir: &Path, key: &str) -> PathBuf {
-    dir.join(DIR).join(format!("{:016x}.bmp", fnv1a(key)))
+    dir.join(DIR).join(format!("{}.bmp", stem(key)))
+}
+
+/// File stem (hash + generation) of `key`.
+fn stem(key: &str) -> String {
+    format!("{:016x}{GEN}", fnv1a(key))
 }
 
 fn marker(p: &Path) -> PathBuf {
@@ -56,6 +65,45 @@ fn source(key: &str) -> Option<(String, String)> {
         return Some((rest[..cut].to_ascii_lowercase(), path));
     }
     is_domain(key).then(|| ("icons.duckduckgo.com".into(), format!("/ip3/{}.ico", key.to_ascii_lowercase())))
+}
+
+/// App Store artwork path asking for 256 px when it names a smaller size segment
+/// (`/100x100bb.jpg` → `/256x256bb.jpg`); unchanged otherwise.
+fn upsize(path: &str) -> String {
+    let cut = path.rfind('/').map_or(0, |i| i + 1);
+    let seg = &path[cut..];
+    let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
+    let wl = digits(seg);
+    if wl > 0 && seg[wl..].starts_with('x') {
+        let hl = digits(&seg[wl + 1..]);
+        let (w, h) = (seg[..wl].parse::<u32>(), seg[wl + 1..wl + 1 + hl].parse::<u32>());
+        if hl > 0 && matches!((w, h), (Ok(w), Ok(h)) if w < 256 && h < 256) {
+            return format!("{}256x256{}", &path[..cut], &seg[wl + 1 + hl..]);
+        }
+    }
+    path.to_string()
+}
+
+/// Download sources for `key`, best first (empty for a key we never fetch). A domain: its own
+/// apple-touch-icon (usually 180 px; redirects are not followed, so the apex then `www.`), then
+/// DuckDuckGo's favicon. Artwork: the 256 px rendition, then the URL as stored.
+fn candidates(key: &str) -> Vec<(String, String)> {
+    let Some(src) = source(key) else { return Vec::new() };
+    if appstore::is_artwork(key) {
+        let big = upsize(&src.1);
+        let mut v = vec![(src.0.clone(), big.clone())];
+        if big != src.1 {
+            v.push(src);
+        }
+        return v;
+    }
+    let d = key.to_ascii_lowercase();
+    let mut v = vec![(d.clone(), "/apple-touch-icon.png".to_string())];
+    if !d.starts_with("www.") {
+        v.push((format!("www.{d}"), "/apple-touch-icon.png".to_string()));
+    }
+    v.push(src);
+    v
 }
 
 /// Whether to download: no image yet, and no failure marker younger than 7 days.
@@ -94,7 +142,7 @@ pub fn valid_key(k: &str) -> bool {
 }
 
 /// Brand color of a cached icon as 0xRRGGBB: the average of its saturated, non-white pixels.
-/// None when the file is missing/not our 64x64 BMP, or the icon is grey/white/black.
+/// None when the file is missing/not our SIZE x SIZE BMP, or the icon is grey/white/black.
 pub fn tint(p: &Path) -> Option<u32> {
     let b = fs::read(p).ok()?;
     let off = u32::from_le_bytes(b.get(10..14)?.try_into().ok()?) as usize;
@@ -111,7 +159,7 @@ pub fn tint(p: &Path) -> Option<u32> {
         bl += cb as u64;
         n += 1;
     }
-    if n < 40 {
+    if n < (SIZE * SIZE / 100) as u64 {
         return None; // under 1% of the tile: not a colored icon
     }
     Some(((r / n) as u32) << 16 | ((g / n) as u32) << 8 | (bl / n) as u32)
@@ -125,7 +173,7 @@ pub fn fetch_missing(dir: &Path, keys: &[String], max: usize) -> u32 {
     let root = dir.join(DIR);
     let mut seen = HashSet::new();
     let keys: Vec<&String> = keys.iter().filter(|k| source(k).is_some() && seen.insert(k.as_str())).collect();
-    prune(&root, &keys.iter().map(|k| format!("{:016x}", fnv1a(k))).collect());
+    prune(&root, &keys.iter().map(|k| stem(k)).collect());
     let todo: Vec<&String> = keys.into_iter().filter(|k| is_due(&path(dir, k))).take(max).collect();
     // Created once here, never per file: if uninstall removes the folder meanwhile, writes fail.
     if todo.is_empty() || fs::create_dir_all(&root).is_err() {
@@ -135,12 +183,24 @@ pub fn fetch_missing(dir: &Path, keys: &[String], max: usize) -> u32 {
     let mut saved = 0;
     for k in todo {
         let p = path(dir, k);
-        let Some((host, url_path)) = source(k) else { continue };
-        let img = match appstore::fetch(&host, &url_path) {
-            Err(0) => break,
-            Err(_) => None,
-            Ok(body) => convert(&body, &mut gdip, &p.with_extension("tmp")),
-        };
+        // Best source first; the first that downloads and decodes wins. Only the last source
+        // answering nothing at all means offline (a hanging own-site just falls through).
+        let cands = candidates(k);
+        let mut img = None;
+        let mut offline = false;
+        for (i, (host, url_path)) in cands.iter().enumerate() {
+            match appstore::fetch(host, url_path) {
+                Err(0) if i + 1 == cands.len() => offline = true,
+                Err(_) => {}
+                Ok(body) => img = convert(&body, &mut gdip, &p.with_extension("tmp")),
+            }
+            if img.is_some() || offline {
+                break;
+            }
+        }
+        if offline {
+            break;
+        }
         match img {
             Some(bmp) => {
                 let tmp = p.with_extension("tmp");
@@ -159,9 +219,9 @@ pub fn fetch_missing(dir: &Path, keys: &[String], max: usize) -> u32 {
     saved
 }
 
-/// Image data of the best entry of an .ico file: the smallest at least 64 px wide, else the
-/// largest. None when `b` is not an icon file.
-fn ico_entry(b: &[u8]) -> Option<&[u8]> {
+/// (width, image data) of the best entry of an .ico file: the smallest at least SIZE px wide,
+/// else the largest. None when `b` is not an icon file.
+fn ico_entry(b: &[u8]) -> Option<(u32, &[u8])> {
     if b.len() < 6 || b[..4] != [0, 0, 1, 0] {
         return None;
     }
@@ -185,10 +245,10 @@ fn ico_entry(b: &[u8]) -> Option<&[u8]> {
             best = Some((w, bpp, data));
         }
     }
-    best.map(|(_, _, d)| d)
+    best.map(|(w, _, d)| (w, d))
 }
 
-/// A 24-bit bottom-up BMP file of `bits` (64x64, rows of 192 bytes).
+/// A 24-bit bottom-up BMP file of `bits` (SIZE x SIZE, rows of SIZE*3 bytes).
 fn bmp_file(bits: &[u8]) -> Vec<u8> {
     let mut f = Vec::with_capacity(54 + bits.len());
     f.extend_from_slice(b"BM");
@@ -207,8 +267,29 @@ fn bmp_file(bits: &[u8]) -> Vec<u8> {
     f
 }
 
-/// Downloaded image (ico, png, jpg, gif, bmp) → 64x64 BMP file on white. `tmp`: scratch file
-/// GDI+ reads from.
+/// Decodes `body` (ico, png, jpg, gif, bmp) and draws it fitted into the SIZE bitmap selected in
+/// `dc` with bicubic scaling (small sources are upscaled). `tmp`: scratch file GDI+ reads from.
+unsafe fn draw_body(g: &Gdip, dc: HDC, body: &[u8], tmp: &Path) -> bool {
+    if let Some((w, e)) = ico_entry(body).filter(|(_, e)| !e.starts_with(b"\x89PNG")) {
+        // Classic DIB-format icon entry: decode at its own size, scale ourselves.
+        let ic = CreateIconFromResourceEx(e.as_ptr(), e.len() as u32, 1, 0x0003_0000, w as i32, w as i32, 0);
+        if ic.is_null() {
+            return false;
+        }
+        let ok = g.from_hicon(ic).is_some_and(|img| g.draw_fit(dc, &img, SIZE));
+        DestroyIcon(ic);
+        return ok;
+    }
+    let data = ico_entry(body).map_or(body, |(_, e)| e); // PNG inside an .ico, or a plain image
+    if fs::write(tmp, data).is_err() {
+        return false;
+    }
+    let ok = g.open(tmp).is_some_and(|img| g.draw_fit(dc, &img, SIZE));
+    let _ = fs::remove_file(tmp);
+    ok
+}
+
+/// Downloaded image → SIZE x SIZE BMP file on white.
 fn convert(body: &[u8], gdip: &mut Option<Option<Gdip>>, tmp: &Path) -> Option<Vec<u8>> {
     unsafe {
         let mut bi: BITMAPINFO = std::mem::zeroed();
@@ -231,127 +312,13 @@ fn convert(body: &[u8], gdip: &mut Option<Option<Gdip>>, tmp: &Path) -> Option<V
         let len = (SIZE * SIZE * 3) as usize;
         std::ptr::write_bytes(bits as *mut u8, 0xFF, len);
         let old = SelectObject(dc, dib);
-        let ok = match ico_entry(body) {
-            Some(e) => {
-                let ic = CreateIconFromResourceEx(e.as_ptr(), e.len() as u32, 1, 0x0003_0000, SIZE, SIZE, 0);
-                let ok = !ic.is_null() && DrawIconEx(dc, 0, 0, ic, SIZE, SIZE, 0, null_mut(), DI_NORMAL) != 0;
-                if !ic.is_null() {
-                    DestroyIcon(ic);
-                }
-                ok
-            }
-            None => gdip.get_or_insert_with(|| Gdip::start()).as_ref().is_some_and(|g| g.draw(dc, body, tmp)),
-        };
+        let ok = gdip.get_or_insert_with(Gdip::start).as_ref().is_some_and(|g| draw_body(g, dc, body, tmp));
         GdiFlush();
         let out = ok.then(|| bmp_file(std::slice::from_raw_parts(bits as *const u8, len)));
         SelectObject(dc, old);
         DeleteObject(dib);
         DeleteDC(dc);
         out
-    }
-}
-
-#[repr(C)]
-struct StartupInput {
-    version: u32,
-    callback: *const c_void,
-    no_thread: BOOL,
-    no_codecs: BOOL,
-}
-type Startup = unsafe extern "system" fn(*mut usize, *const StartupInput, *mut c_void) -> i32;
-type FromFile = unsafe extern "system" fn(*const u16, *mut *mut c_void) -> i32;
-type ToHbitmap = unsafe extern "system" fn(*mut c_void, *mut HBITMAP, u32) -> i32;
-type Dispose = unsafe extern "system" fn(*mut c_void) -> i32;
-type Shutdown = unsafe extern "system" fn(usize);
-
-/// GDI+ flat API, loaded at run time (helper process only).
-struct Gdip {
-    lib: HMODULE,
-    token: usize,
-    from_file: FromFile,
-    to_hbitmap: ToHbitmap,
-    dispose: Dispose,
-    shutdown: Shutdown,
-}
-
-impl Gdip {
-    fn start() -> Option<Gdip> {
-        unsafe {
-            let lib = LoadLibraryW(crate::w("gdiplus.dll").as_ptr());
-            if lib.is_null() {
-                return None;
-            }
-            let f = |n: &[u8]| GetProcAddress(lib, n.as_ptr());
-            let (Some(st), Some(ff), Some(th), Some(di), Some(sd)) =
-                (f(b"GdiplusStartup\0"), f(b"GdipCreateBitmapFromFile\0"), f(b"GdipCreateHBITMAPFromBitmap\0"), f(b"GdipDisposeImage\0"), f(b"GdiplusShutdown\0"))
-            else {
-                FreeLibrary(lib);
-                return None;
-            };
-            let input = StartupInput { version: 1, callback: null(), no_thread: 0, no_codecs: 0 };
-            let mut token = 0usize;
-            if std::mem::transmute::<_, Startup>(st)(&mut token, &input, null_mut()) != 0 {
-                FreeLibrary(lib);
-                return None;
-            }
-            Some(Gdip {
-                lib,
-                token,
-                from_file: std::mem::transmute::<_, FromFile>(ff),
-                to_hbitmap: std::mem::transmute::<_, ToHbitmap>(th),
-                dispose: std::mem::transmute::<_, Dispose>(di),
-                shutdown: std::mem::transmute::<_, Shutdown>(sd),
-            })
-        }
-    }
-
-    /// Image file → GDI bitmap (alpha composited on white); null on failure. Caller frees it.
-    unsafe fn hbitmap(&self, p: &Path) -> HBITMAP {
-        let mut img = null_mut();
-        let mut hb: HBITMAP = null_mut();
-        if (self.from_file)(crate::w(&p.to_string_lossy()).as_ptr(), &mut img) == 0 && !img.is_null() {
-            (self.to_hbitmap)(img, &mut hb, 0xFFFF_FFFF);
-        }
-        if !img.is_null() {
-            (self.dispose)(img); // releases the file
-        }
-        hb
-    }
-
-    /// Decodes `body` and draws it fitted and centred into the 64x64 bitmap selected in `dc`.
-    unsafe fn draw(&self, dc: HDC, body: &[u8], tmp: &Path) -> bool {
-        if fs::write(tmp, body).is_err() {
-            return false;
-        }
-        let hb = self.hbitmap(tmp);
-        let _ = fs::remove_file(tmp);
-        if hb.is_null() {
-            return false;
-        }
-        let mut bm: BITMAP = std::mem::zeroed();
-        GetObjectW(hb, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut BITMAP as *mut c_void);
-        let ok = bm.bmWidth > 0 && bm.bmHeight > 0 && {
-            let (w, h) = if bm.bmWidth >= bm.bmHeight { (SIZE, (SIZE * bm.bmHeight / bm.bmWidth).max(1)) } else { ((SIZE * bm.bmWidth / bm.bmHeight).max(1), SIZE) };
-            let src = CreateCompatibleDC(dc);
-            let old = SelectObject(src, hb);
-            SetStretchBltMode(dc, HALFTONE);
-            SetBrushOrgEx(dc, 0, 0, null_mut());
-            let ok = StretchBlt(dc, (SIZE - w) / 2, (SIZE - h) / 2, w, h, src, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY) != 0;
-            SelectObject(src, old);
-            DeleteDC(src);
-            ok
-        };
-        DeleteObject(hb);
-        ok
-    }
-}
-
-impl Drop for Gdip {
-    fn drop(&mut self) {
-        unsafe {
-            (self.shutdown)(self.token);
-            FreeLibrary(self.lib);
-        }
     }
 }
 
@@ -369,37 +336,69 @@ pub fn load(p: &Path) -> HBITMAP {
     unsafe { LoadImageW(null_mut(), crate::w(&p.to_string_lossy()).as_ptr(), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION) as HBITMAP }
 }
 
-/// Icon tile in `r`: a `ring`-coloured rounded square (corner radius `radius`), a white tile
-/// `inset` px inside it, and `bmp` stretched into the white tile, clipped to its corners.
-pub fn draw(dc: HDC, r: RECT, bmp: HBITMAP, ring: u32, radius: i32, inset: i32) {
+/// Icon tile in `r`, anti-aliased (4x supersampled, see `aa`): a `ring`-coloured rounded square
+/// (corner radius `radius`), a white tile `inset` px inside it, and `bmp` stretched into the
+/// white tile, clipped to its corners. `bg` is the colour behind the tile (row or hover colour).
+/// Background colour of a cached logo: the average of its four corner pixels (cache BMPs are
+/// composited on white, so a transparent logo gives white).
+fn logo_bg(bmp: HBITMAP) -> u32 {
+    unsafe {
+        let dc = CreateCompatibleDC(null_mut());
+        let old = SelectObject(dc, bmp);
+        let mut bm: BITMAP = std::mem::zeroed();
+        GetObjectW(bmp, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut BITMAP as *mut c_void);
+        let (w, h) = (bm.bmWidth - 2, bm.bmHeight - 2);
+        let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+        for (x, y) in [(1, 1), (w, 1), (1, h), (w, h)] {
+            let c = GetPixel(dc, x, y);
+            r += c & 0xFF;
+            g += (c >> 8) & 0xFF;
+            b += (c >> 16) & 0xFF;
+        }
+        SelectObject(dc, old);
+        DeleteDC(dc);
+        (r / 4) | ((g / 4) << 8) | ((b / 4) << 16)
+    }
+}
+
+pub fn draw(dc: HDC, r: RECT, bmp: HBITMAP, ring: u32, radius: i32, inset: i32, bg: u32) {
     unsafe {
         let inner = RECT { left: r.left + inset, top: r.top + inset, right: r.right - inset, bottom: r.bottom - inset };
         let d = ((radius - inset).max(0) * 2).max(1);
-        let op = SelectObject(dc, GetStockObject(NULL_PEN));
-        for (rr, color, dd) in [(r, ring, (radius * 2).max(1)), (inner, 0x00FF_FFFF, d)] {
-            let b = CreateSolidBrush(color);
-            let ob = SelectObject(dc, b);
-            RoundRect(dc, rr.left, rr.top, rr.right, rr.bottom, dd, dd); // same box as the letter tile
-            SelectObject(dc, ob);
-            DeleteObject(b);
-        }
-        SelectObject(dc, op);
         let mut bm: BITMAP = std::mem::zeroed();
-        if bmp.is_null() || GetObjectW(bmp, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut BITMAP as *mut c_void) == 0 {
-            return;
-        }
-        let rgn = CreateRoundRectRgn(inner.left, inner.top, inner.right, inner.bottom, d, d);
-        SelectClipRgn(dc, rgn);
-        let src = CreateCompatibleDC(dc);
-        let old = SelectObject(src, bmp);
-        let mode = SetStretchBltMode(dc, HALFTONE);
-        SetBrushOrgEx(dc, 0, 0, null_mut());
-        StretchBlt(dc, inner.left, inner.top, inner.right - inner.left, inner.bottom - inner.top, src, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
-        SetStretchBltMode(dc, mode);
-        SelectObject(src, old);
-        DeleteDC(src);
-        SelectClipRgn(dc, null_mut());
-        DeleteObject(rgn);
+        let has_bmp = !bmp.is_null() && GetObjectW(bmp, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut BITMAP as *mut c_void) != 0;
+        // Fill the tile with the logo's own background (its corner pixel) so the padded logo
+        // blends into a full-bleed tile instead of sitting on a white disc.
+        let fill = if has_bmp { logo_bg(bmp) } else { 0x00FF_FFFF };
+        crate::aa::paint(dc, r, bg, |big, m| {
+            let op = SelectObject(big, GetStockObject(NULL_PEN));
+            for (rr, color, dd) in [(r, ring, (radius * 2).max(1)), (inner, fill, d)] {
+                let b = CreateSolidBrush(color);
+                let ob = SelectObject(big, b);
+                RoundRect(big, m.x(rr.left), m.y(rr.top), m.x(rr.right) + 1, m.y(rr.bottom) + 1, m.len(dd), m.len(dd));
+                SelectObject(big, ob);
+                DeleteObject(b);
+            }
+            SelectObject(big, op);
+            if !has_bmp {
+                return;
+            }
+            let ib = m.rect(inner);
+            let rgn = CreateRoundRectRgn(ib.left, ib.top, ib.right, ib.bottom, m.len(d), m.len(d));
+            SelectClipRgn(big, rgn);
+            let src = CreateCompatibleDC(big);
+            let old = SelectObject(src, bmp);
+            let mode = SetStretchBltMode(big, HALFTONE);
+            SetBrushOrgEx(big, 0, 0, null_mut());
+            // Logo sits inside the white tile with ~14% padding so bold logos (Netflix) don't fill it edge to edge.
+            let pad = (ib.right - ib.left) * 12 / 100;
+            StretchBlt(big, ib.left + pad, ib.top + pad, ib.right - ib.left - 2 * pad, ib.bottom - ib.top - 2 * pad, src, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+            SetStretchBltMode(big, mode);
+            SelectObject(src, old);
+            DeleteDC(src);
+            SelectClipRgn(big, null_mut());
+            DeleteObject(rgn);
+        });
     }
 }
 
@@ -412,8 +411,9 @@ mod tests {
         assert_eq!(fnv1a(""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a("a"), 0xaf63_dc4c_8601_ec8c);
         let p = path(Path::new("D:\\data"), "a");
-        assert_eq!(p, Path::new("D:\\data\\icons\\af63dc4c8601ec8c.bmp"));
-        assert_eq!(marker(&p), Path::new("D:\\data\\icons\\af63dc4c8601ec8c.no"));
+        assert_eq!(p, Path::new("D:\\data\\icons\\af63dc4c8601ec8c-2.bmp"));
+        assert_eq!(marker(&p), Path::new("D:\\data\\icons\\af63dc4c8601ec8c-2.no"));
+        assert_eq!(p.with_extension("tmp"), Path::new("D:\\data\\icons\\af63dc4c8601ec8c-2.tmp"));
         assert_ne!(path(Path::new("x"), "netflix.com"), path(Path::new("x"), "Netflix.com"));
         assert_eq!(source("netflix.com"), Some(("icons.duckduckgo.com".into(), "/ip3/netflix.com.ico".into())));
         let art = "https://is1-ssl.mzstatic.com/image/thumb/x/100x100bb.jpg";
@@ -421,6 +421,32 @@ mod tests {
         for bad in ["", "localhost", "a..b", ".a.com", "a.com-", "a b.com", "a.com/x", "https://evil.example/a.png", "http://a.mzstatic.com/a.jpg"] {
             assert_eq!(source(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn icons_artwork_upsize_and_candidates() {
+        assert_eq!(upsize("/image/thumb/x/100x100bb.jpg"), "/image/thumb/x/256x256bb.jpg");
+        assert_eq!(upsize("/image/thumb/x/60x60bb.png"), "/image/thumb/x/256x256bb.png");
+        assert_eq!(upsize("/image/thumb/x/512x512bb.jpg"), "/image/thumb/x/512x512bb.jpg");
+        assert_eq!(upsize("/image/thumb/x/256x256bb.jpg"), "/image/thumb/x/256x256bb.jpg");
+        assert_eq!(upsize("/image/x.jpg"), "/image/x.jpg");
+        assert_eq!(upsize("/100x/a.jpg"), "/100x/a.jpg");
+        assert_eq!(upsize("/x/100xbb.jpg"), "/x/100xbb.jpg");
+        assert_eq!(upsize("/"), "/");
+        assert_eq!(upsize(""), "");
+        let art = "https://is1-ssl.mzstatic.com/image/thumb/x/100x100bb.jpg";
+        let c = candidates(art);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0], ("is1-ssl.mzstatic.com".to_string(), "/image/thumb/x/256x256bb.jpg".to_string()));
+        assert_eq!(c[1].1, "/image/thumb/x/100x100bb.jpg");
+        assert_eq!(candidates("https://is1-ssl.mzstatic.com/a/256x256bb.jpg").len(), 1);
+        let d = candidates("Netflix.com");
+        let hosts: Vec<&str> = d.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(hosts, ["netflix.com", "www.netflix.com", "icons.duckduckgo.com"]);
+        assert_eq!(d[0].1, "/apple-touch-icon.png");
+        assert_eq!(d[2].1, "/ip3/netflix.com.ico");
+        assert_eq!(candidates("www.a.com").len(), 2);
+        assert!(candidates("localhost").is_empty());
     }
 
     #[test]
@@ -434,7 +460,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("subscribity-tint-test-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let mk = |name: &str, bgr: [u8; 3]| {
-            let bits: Vec<u8> = (0..64 * 64).flat_map(|_| bgr).collect();
+            let bits: Vec<u8> = (0..128 * 128).flat_map(|_| bgr).collect();
             let p = root.join(name);
             fs::write(&p, bmp_file(&bits)).unwrap();
             p
@@ -443,11 +469,11 @@ mod tests {
         assert_eq!(tint(&mk("grey.bmp", [0x80, 0x80, 0x80])), None);
         assert_eq!(tint(&mk("white.bmp", [0xFF, 0xFF, 0xFF])), None);
         assert_eq!(tint(&mk("black.bmp", [0, 0, 0])), None);
-        // White tile with a 16x16 blue square (256 px): tint is the blue, not diluted by white.
-        let mut bits = vec![0xFFu8; 64 * 64 * 3];
-        for y in 0..16 {
-            for x in 0..16 {
-                let i = (y * 64 + x) * 3;
+        // White tile with a 32x32 blue square (1024 px): tint is the blue, not diluted by white.
+        let mut bits = vec![0xFFu8; 128 * 128 * 3];
+        for y in 0..32 {
+            for x in 0..32 {
+                let i = (y * 128 + x) * 3;
                 bits[i..i + 3].copy_from_slice(&[0xC0, 0x40, 0x20]);
             }
         }
@@ -474,26 +500,27 @@ mod tests {
 
     #[test]
     fn icons_ico_entry_and_bmp() {
-        // Three entries: 16 px, 256 px (w byte 0), 64 px; data bytes 0x10, 0x20, 0x30.
+        // Three entries: 16 px, 256 px (w byte 0), 128 px; data bytes 0x10, 0x20, 0x30.
         let mut b = vec![0, 0, 1, 0, 3, 0];
         let off = 6 + 3 * 16;
-        for (i, w) in [16u8, 0, 64].iter().enumerate() {
+        for (i, w) in [16u8, 0, 128].iter().enumerate() {
             b.extend_from_slice(&[*w, *w, 0, 0, 1, 0, 32, 0]);
             b.extend_from_slice(&1u32.to_le_bytes());
             b.extend_from_slice(&((off + i) as u32).to_le_bytes());
         }
         b.extend_from_slice(&[0x10, 0x20, 0x30]);
-        assert_eq!(ico_entry(&b), Some(&[0x30u8][..])); // smallest >= 64
+        assert_eq!(ico_entry(&b), Some((128, &[0x30u8][..]))); // smallest >= 128
         b[6 + 2 * 16] = 32; // third entry now 32 px: 256 wins
-        assert_eq!(ico_entry(&b), Some(&[0x20u8][..]));
+        assert_eq!(ico_entry(&b), Some((256, &[0x20u8][..])));
         b[6 + 16] = 24; // 16, 24, 32: largest
-        assert_eq!(ico_entry(&b), Some(&[0x30u8][..]));
+        assert_eq!(ico_entry(&b), Some((32, &[0x30u8][..])));
         assert_eq!(ico_entry(&b[..30]), None); // truncated directory
         assert_eq!(ico_entry(b"\x89PNG\r\n\x1a\n"), None);
-        let f = bmp_file(&vec![0xFF; 64 * 64 * 3]);
-        assert_eq!(f.len(), 54 + 12288);
+        let f = bmp_file(&vec![0xFF; 128 * 128 * 3]);
+        assert_eq!(f.len(), 54 + 49152);
         assert_eq!(&f[..2], b"BM");
-        assert_eq!(u32::from_le_bytes([f[2], f[3], f[4], f[5]]), 12342);
+        assert_eq!(u32::from_le_bytes([f[2], f[3], f[4], f[5]]), 49206);
+        assert_eq!(u32::from_le_bytes([f[18], f[19], f[20], f[21]]), 128);
         assert_eq!(u16::from_le_bytes([f[28], f[29]]), 24);
     }
 
@@ -508,8 +535,11 @@ mod tests {
             fs::write(p, b"x").unwrap();
         }
         fs::write(root.join(DIR).join("readme.txt"), b"x").unwrap();
-        prune(&root.join(DIR), &[format!("{:016x}", fnv1a("netflix.com"))].into_iter().collect());
+        let old64 = root.join(DIR).join(format!("{:016x}.bmp", fnv1a("netflix.com"))); // v0.4 64 px file
+        fs::write(&old64, b"x").unwrap();
+        prune(&root.join(DIR), &[stem("netflix.com")].into_iter().collect());
         assert!(keep.exists() && !gone.exists() && !marker(&gone).exists());
+        assert!(!old64.exists()); // old generation refetched, then pruned
         assert!(root.join(DIR).join("readme.txt").exists()); // not ours
         assert!(!pending(&root, &["netflix.com".into()]));
         assert!(pending(&root, &["old.example".into()]));
