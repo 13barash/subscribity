@@ -87,17 +87,23 @@ pub fn set_unused(st: &mut Store, id: u32, on: bool, today: i32) -> bool {
 /// Tray: the scanner's `scan_price_up` entries not announced yet, as "Netflix: $15.49 → $17.99".
 /// An entry counts while its sub exists, is active, has the same currency and the charge is
 /// still > 1% above the saved price. Announced keys (`id|price`) of entries that are gone are
-/// dropped; with `mark` (the alerts are being shown) the returned ones count as announced.
+/// dropped (kept while only the sub is missing, until the next scan replaces the entries); with `mark` (the alerts are being shown) the returned ones count as announced.
 /// state.tsv is saved when anything changed.
 pub fn fresh_price_alerts(st: &mut Store, mark: bool) -> Vec<String> {
     let mut live = HashSet::new();
     let mut out = Vec::new();
     for (id, price, cur) in &st.settings.price_up {
-        let Some(s) = st.subs.iter().find(|s| s.id == *id) else { continue };
+        let key = format!("{}|{:.2}", id, price);
+        let Some(s) = st.subs.iter().find(|s| s.id == *id) else {
+            // Sub gone (maybe deleted and about to be undone): keep it announced, not re-announced.
+            if st.price_alerted.contains(&key) {
+                live.insert(key);
+            }
+            continue;
+        };
         if !s.active || s.cur != *cur || *price <= s.price + s.price.abs() * 0.01 {
             continue;
         }
-        let key = format!("{}|{:.2}", id, price);
         if !st.price_alerted.contains(&key) && !live.contains(&key) {
             out.push(format!("{}: {} → {}", s.name, money(s.price, &s.cur), money(*price, cur)));
         }
@@ -388,6 +394,13 @@ mod tests {
         st.subs[0].price = 19.99; // price updated in the app: entry no longer counts, key dropped
         assert!(fresh_price_alerts(&mut st, true).is_empty());
         assert!(st.price_alerted.is_empty());
+        // Deleted, then undone: the announced alert stays announced.
+        st.subs[0].price = 15.49;
+        assert_eq!(fresh_price_alerts(&mut st, true).len(), 1);
+        let kept = st.subs.remove(0);
+        assert!(fresh_price_alerts(&mut st, true).is_empty() && st.price_alerted.contains("1|19.99"));
+        st.subs.push(kept);
+        assert!(fresh_price_alerts(&mut st, true).is_empty());
         st.subs.clear(); // sub deleted
         st.settings.price_up = vec![(1, 25.0, "USD".into())];
         assert!(fresh_price_alerts(&mut st, true).is_empty());

@@ -2,6 +2,7 @@
 //! opens, served as a small BMP at `http://icon.localhost/__wallpaper` so the page needs no CSS
 //! filter (no per-frame blur). Used when the OS acrylic is unavailable (Transparency effects off).
 //! GDI+ is loaded only here in the window process, never in the tray.
+use crate::gdip::Gdip;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
@@ -39,62 +40,50 @@ fn transcoded_path() -> Option<PathBuf> {
 }
 
 /// The wallpaper as a ready-to-serve 24-bit BMP file; None for a solid-colour desktop or on failure.
+/// Runs on a worker thread (see main.rs create_window); GDI+ is loaded only for the call.
 pub fn render() -> Option<Vec<u8>> {
     let first = current_path()?; // empty = solid colour: no image
-    let (w, h, mut px) = [Some(first), transcoded_path()].into_iter().flatten().find_map(|p| shrink(&p))?;
+    let (w, h, mut px) = {
+        let g = Gdip::start()?;
+        [Some(first), transcoded_path()].into_iter().flatten().find_map(|p| unsafe { shrink(&g, &p) })?
+    }; // GDI+ (and its decoded copy of the file) is gone before the blur
     process(&mut px, w, h);
     Some(bmp24(&px, w, h))
 }
 
-/// Decodes `p` and shrinks it to <= MAX_W wide; returns (w, h, top-down BGRA).
-fn shrink(p: &Path) -> Option<(usize, usize, Vec<u8>)> {
-    let src = crate::icons::decode_file(p);
-    if src.is_null() {
-        return None;
+/// Decodes `p` straight into a <= MAX_W wide DIB (no full-size bitmap copy; transparent parts
+/// on white); returns (w, h, top-down BGRA).
+unsafe fn shrink(g: &Gdip, p: &Path) -> Option<(usize, usize, Vec<u8>)> {
+    let img = g.open(p)?;
+    let (sw, sh) = g.size(&img)?;
+    let (w, h) = fit(sw as usize, sh as usize, MAX_W as usize);
+    let mut bi: BITMAPINFO = std::mem::zeroed();
+    bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bi.bmiHeader.biWidth = w as i32;
+    bi.bmiHeader.biHeight = -(h as i32);
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    let mut bits: *mut c_void = null_mut();
+    let dc = CreateCompatibleDC(null_mut());
+    let dib = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+    let mut res = None;
+    if !dc.is_null() && !dib.is_null() && !bits.is_null() {
+        std::ptr::write_bytes(bits as *mut u8, 0xFF, w * h * 4);
+        let old = SelectObject(dc, dib);
+        if g.draw(dc, &img, 0, 0, w as i32, h as i32) {
+            GdiFlush();
+            res = Some((w, h, std::slice::from_raw_parts(bits as *const u8, w * h * 4).to_vec()));
+        }
+        SelectObject(dc, old);
     }
-    unsafe {
-        let mut bm: BITMAP = std::mem::zeroed();
-        GetObjectW(src, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut BITMAP as *mut c_void);
-        let out = if bm.bmWidth > 0 && bm.bmHeight > 0 {
-            let (w, h) = fit(bm.bmWidth as usize, bm.bmHeight as usize, MAX_W as usize);
-            let mut bi: BITMAPINFO = std::mem::zeroed();
-            bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bi.bmiHeader.biWidth = w as i32;
-            bi.bmiHeader.biHeight = -(h as i32);
-            bi.bmiHeader.biPlanes = 1;
-            bi.bmiHeader.biBitCount = 32;
-            bi.bmiHeader.biCompression = BI_RGB;
-            let mut bits: *mut c_void = null_mut();
-            let dc = CreateCompatibleDC(null_mut());
-            let dib = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-            let mut res = None;
-            if !dc.is_null() && !dib.is_null() && !bits.is_null() {
-                let old = SelectObject(dc, dib);
-                let sdc = CreateCompatibleDC(dc);
-                let sold = SelectObject(sdc, src);
-                SetStretchBltMode(dc, HALFTONE);
-                SetBrushOrgEx(dc, 0, 0, null_mut());
-                if StretchBlt(dc, 0, 0, w as i32, h as i32, sdc, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY) != 0 {
-                    GdiFlush();
-                    res = Some((w, h, std::slice::from_raw_parts(bits as *const u8, w * h * 4).to_vec()));
-                }
-                SelectObject(sdc, sold);
-                DeleteDC(sdc);
-                SelectObject(dc, old);
-            }
-            if !dib.is_null() {
-                DeleteObject(dib);
-            }
-            if !dc.is_null() {
-                DeleteDC(dc);
-            }
-            res
-        } else {
-            None
-        };
-        DeleteObject(src);
-        out
+    if !dib.is_null() {
+        DeleteObject(dib);
     }
+    if !dc.is_null() {
+        DeleteDC(dc);
+    }
+    res
 }
 
 /// Size that fits `max` wide, never upscaled, aspect kept, at least 1x1.

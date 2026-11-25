@@ -354,15 +354,6 @@ fn convert(body: &[u8], gdip: &mut Option<Option<Gdip>>, tmp: &Path) -> Option<(
     }
 }
 
-/// Any GDI+-readable image file as a GDI bitmap (window process only: loads gdiplus.dll, then
-/// unloads it); null on failure. The caller frees it with DeleteObject.
-pub fn decode_file(p: &Path) -> HBITMAP {
-    match Gdip::start() {
-        Some(g) => unsafe { g.hbitmap(p) },
-        None => null_mut(),
-    }
-}
-
 /// Cached icon as a GDI bitmap; null when missing. The caller frees it with DeleteObject.
 pub fn load(p: &Path) -> HBITMAP {
     unsafe { LoadImageW(null_mut(), crate::w(&p.to_string_lossy()).as_ptr(), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION) as HBITMAP }

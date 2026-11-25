@@ -134,6 +134,8 @@ h3 { font: var(--t-h3); }
 
 .banner { display: none; align-items: center; gap: var(--s3); max-width: 1040px; margin: 0 auto var(--s4); padding: var(--s2) var(--s2) var(--s2) var(--s4); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: var(--r-md); }
 .banner.show { display: flex; flex-wrap: wrap; }
+.banner.warn { border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.banner.warn b { color: var(--warn); font-weight: 600; }
 .banner > svg { color: var(--accent); }
 .banner .grow { flex: 1; min-width: 160px; }
 
@@ -440,6 +442,8 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
 
 .toast { position: fixed; bottom: var(--s5); left: 50%; transform: translate(-50%, 16px); background: var(--surface-solid); border: 1px solid var(--line-strong); color: var(--text); padding: var(--s3) var(--s5); border-radius: var(--r-md); font: var(--t-btn); opacity: 0; transition: opacity var(--d-mid) var(--ease-out), transform var(--d-mid) var(--ease-out); pointer-events: none; z-index: 40; box-shadow: var(--sh-2); max-width: calc(100vw - 32px); }
 .toast.show { opacity: 1; transform: translate(-50%, 0); background: var(--glass-bg); backdrop-filter: blur(var(--blur)) saturate(140%); -webkit-backdrop-filter: blur(var(--blur)) saturate(140%); }
+.toast.act { display: flex; align-items: center; gap: var(--s3); }
+.toast.act.show { pointer-events: auto; }
 html.noblur .toast.show { backdrop-filter: none; -webkit-backdrop-filter: none; }
 
 /* scanner */
@@ -523,6 +527,7 @@ html.noblur .toast.show { backdrop-filter: none; -webkit-backdrop-filter: none; 
 </nav>
 
 <main id="main">
+  <div class="banner warn glass" id="dberr" role="alert"><div class="grow"><b id="dberr-t"></b></div></div>
   <div class="banner glass" id="banner">
     <svg class="logo" viewBox="0 0 256 256" aria-hidden="true"><use href="#logo-sym"/></svg>
     <div class="grow"><b id="banner-t"></b><div class="sub">Installs in a few seconds and keeps all your data.</div></div>
@@ -667,6 +672,16 @@ html.noblur .toast.show { backdrop-filter: none; -webkit-backdrop-filter: none; 
     </div>
 
     <div class="panel">
+      <div class="ctitle"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Updates</div>
+      <div class="set"><div><div class="t">Check for updates</div><div class="sub" id="s-update"></div></div>
+        <div class="r">
+          <div class="seg" id="s-freq"><button data-v="weekly">Weekly</button><button data-v="monthly">Monthly</button><button data-v="off">Off</button></div>
+          <button class="btn" id="s-check" onclick="send({cmd:'update_check'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Check now</button>
+          <button class="btn primary" id="s-install" onclick="installUpdate()">Install</button>
+        </div></div>
+    </div>
+
+    <div class="panel">
       <div class="ctitle"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-list"/></svg>Lists</div>
       <div class="lists">
         <div class="lm"><div class="t" style="font-weight:600">Categories</div><div class="sub">Suggested when you add a subscription. Removing one doesn't change subscriptions that use it.</div>
@@ -693,16 +708,6 @@ html.noblur .toast.show { backdrop-filter: none; -webkit-backdrop-filter: none; 
       <div class="set"><div><div class="t">Backups</div><div class="sub" id="s-bk-sub">A copy of your data is saved every week and kept for 30 days.</div></div>
         <div class="r"><button class="btn" id="s-bk-toggle" aria-expanded="false" aria-controls="s-backups"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-undo"/></svg>Restore…<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chev"/></svg></button></div>
         <div class="backups" id="s-backups" hidden></div></div>
-    </div>
-
-    <div class="panel">
-      <div class="ctitle"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Updates</div>
-      <div class="set"><div><div class="t">Check for updates</div><div class="sub" id="s-update"></div></div>
-        <div class="r">
-          <div class="seg" id="s-freq"><button data-v="weekly">Weekly</button><button data-v="monthly">Monthly</button><button data-v="off">Off</button></div>
-          <button class="btn" id="s-check" onclick="send({cmd:'update_check'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Check now</button>
-          <button class="btn primary" id="s-install" onclick="installUpdate()">Install</button>
-        </div></div>
     </div>
 
     <div class="panel">
@@ -891,7 +896,26 @@ function iconRetry(src) {
 }
 document.addEventListener("error", e => { if (e.target.tagName === "IMG") { const s = e.target.getAttribute("src") || ""; e.target.remove(); iconRetry(s); } }, true);
 document.addEventListener("load", e => { if (e.target.tagName === "IMG") { e.target.classList.add("ok"); LOADED.add(esc(e.target.getAttribute("src"))); } }, true);
-function toast(t) { const e = $("toast"); e.textContent = t; e.classList.add("show"); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove("show"), 2400); }
+// toast(text) is a plain 2.4 s toast. toast(text, true) adds an Undo button, stays 6 s (paused while hovered/focused).
+function toast(t, undo) {
+  const e = $("toast"); clearTimeout(e._t); clearTimeout(e._c);
+  e.textContent = t; e._undo = !!undo; e._ms = undo ? 6000 : 2400;
+  e.classList.toggle("act", !!undo);
+  if (undo) { const b = document.createElement("button"); b.className = "btn small tundo"; b.textContent = "Undo"; b.onclick = undoDelete; e.append(b); }
+  e.classList.add("show"); toastArm(e._ms);
+}
+function toastArm(ms) { const e = $("toast"); clearTimeout(e._t); e._t = setTimeout(toastHide, ms); }
+function toastHide() {
+  const e = $("toast"); e.classList.remove("show"); e._undo = false;
+  clearTimeout(e._c); e._c = setTimeout(() => { if (!e.classList.contains("show")) { e.classList.remove("act"); e.textContent = ""; } }, 400);
+}
+(() => { const e = document.getElementById("toast");
+  const hold = () => { if (e._undo) clearTimeout(e._t); };
+  const rest = () => { if (e._undo && e.classList.contains("show") && !e.matches(":hover") && !e.contains(document.activeElement)) toastArm(3000); };
+  e.addEventListener("mouseenter", hold); e.addEventListener("focusin", hold);
+  e.addEventListener("mouseleave", rest); e.addEventListener("focusout", () => setTimeout(rest, 0));
+})();
+function undoDelete() { const e = $("toast"); if (!e._undo) return; toastHide(); send({ cmd: "undo_delete" }); }
 // Reads "9.99", "9,99", "1,234.50", "1.234,50", "1 234,50", "₪54.90". Negative, empty or garbage gives NaN.
 function parsePrice(t) {
   t = String(t ?? "");
@@ -972,6 +996,7 @@ window.__recv = msg => {
   else if (t === "calendar") renderCalendar(msg);
   else if (t === "toast") { saving = false; ownSave = false; unbusy(); toast(msg.text); }
   else if (t === "error") { saving = false; ownSave = false; unbusy(); if (isOpen($("scrim"))) { if (/manage/i.test(msg.text || "")) { $("e-details").open = true; setErr("e-manage", msg.text); $("e-manage").focus(); } else $("e-err").textContent = msg.text; } else toast(msg.text); }
+  else if (t === "deleted") { toast(msg.kind === "payment" ? "Payment deleted" : `${msg.name || "Subscription"} deleted`, true); }
   else if (t === "saved") { saving = false; if (ownSave) closeEdit(); toast(msg.text); }
   else if (t === "open") { if (S) handleOpen(msg); else pendingOpen.push(msg); }
   else if (t === "data_dir_picked") dataDirPicked(msg);
@@ -983,13 +1008,36 @@ function handleOpen(msg) {
   else { if (msg.page) go(msg.page); if (msg.add) openEdit(); if (msg.edit) openEdit(msg.edit); }
 }
 
-function renderAll() {
+// Only the visible page is rebuilt; the others are marked dirty and render when go() opens them.
+const PAGE_RENDER = { subs: [renderSubs], calendar: [renderCalPage], stats: [renderStats], history: [renderHistory], settings: [renderSettings], scan: [renderScan] };
+const dirty = new Set();
+function curPage() { const p = document.querySelector(".page.active"); return p ? p.id.slice(5) : "subs"; }
+function renderCalPage() { if (cal) send({ cmd: "calendar", y: cal.y, m: cal.m }); }
+function renderPage(p) {
+  dirty.delete(p);
+  for (const f of PAGE_RENDER[p] || []) { try { f(); } catch (e) { console.error(f.name, e); } }
+}
+function renderShared() {
   $("foot").textContent = "v" + S.version; $("s-ver").textContent = "v" + S.version;
-  for (const f of [fillFilters, renderSubs, renderStats, renderHistory, renderSettings, renderScan]) {
-    try { f(); } catch (e) { console.error(f.name, e); }
-  }
+  try { renderBanners(); } catch (e) { console.error("renderBanners", e); }
+  try { renderNavBadge(); } catch (e) { console.error("renderNavBadge", e); }
+  try { fillFilters(); } catch (e) { console.error("fillFilters", e); }
+}
+function renderBanners() {
+  const st = S.settings || {}, de = S.dataError;
+  $("banner-btn").disabled = !!st.updateBusy;
+  $("banner-btn").innerHTML = ic("download") + `<span>${esc(st.updateBusy ? "Installing…" : st.latest ? `Install ${st.latest}` : "Install")}</span>`;
+  $("banner").classList.toggle("show", !!st.latest);
+  $("banner-t").textContent = `Subscribity ${st.latest} is available`;
+  $("dberr").classList.toggle("show", !!de);
+  $("dberr-t").textContent = de || "";
+}
+function renderNavBadge() { const n = (S.scan || {}).pending; $("nav-badge").hidden = !(n > 0); $("nav-badge").textContent = n > 99 ? "99+" : String(n || ""); }
+function renderAll() {
+  renderShared();
+  const cur = curPage();
+  for (const p of Object.keys(PAGE_RENDER)) { if (p === cur) renderPage(p); else dirty.add(p); }
   try { if (isOpen($("scrim")) && editing) refreshEditQuick(); } catch (e) { console.error("refreshEditQuick", e); }
-  if (cal) send({ cmd: "calendar", y: cal.y, m: cal.m });
 }
 
 // ---------- subscriptions ----------
@@ -1064,6 +1112,7 @@ function renderSubs() {
     sort === "name" ? a.name.localeCompare(b.name) : sort === "price" ? mm(a) - mm(b) : sort === "priceDesc" ? mm(b) - mm(a) :
     (b.active - a.active) || (a.left - b.left) || a.name.localeCompare(b.name));
 
+  if (!S.subs.length && S.dataError) { $("list").innerHTML = ""; return; }
   if (!S.subs.length) {
     const seen = new Set(), pops = [];
     for (const t of tpl()) { if (!seen.has(t[2]) && pops.length < 6) { seen.add(t[2]); pops.push(t); } }
@@ -1326,11 +1375,9 @@ function saveSub() {
     icon: $("e-url").value.trim() === editBase.url ? editBase.icon : "",
     first: editBase.isNew && $("e-date").value !== editBase.start ? "" : editBase.first } });
 }
-async function delSub() {
-  const s = S.subs.find(x => x.id === editing);
-  if (await ask(`Delete ${s?.name ?? "this subscription"}?`, "Its payment history is kept. This cannot be undone.", "Delete")) {
-    send({ cmd: "delete", id: editing }); closeEdit();
-  }
+function delSub() {
+  if (editing == null) return;
+  send({ cmd: "delete", id: editing }); closeEdit(); // undo toast arrives with the 'deleted' message
 }
 function trap(e, scrim) {
   if (e.key !== "Tab") return;
@@ -1342,6 +1389,7 @@ function trap(e, scrim) {
 }
 document.addEventListener("keydown", e => {
   if (isOpen($("busy"))) { e.preventDefault(); return; }
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "z" || e.key === "Z") && $("toast")._undo && !isOpen($("ask")) && !(e.target.closest && e.target.closest("input,textarea,select"))) { e.preventDefault(); undoDelete(); return; }
   if (isOpen($("ask"))) { if (e.key === "Escape") answer(false); else if (e.key === "Enter" && e.target.tagName !== "BUTTON") answer(true); else trap(e, $("ask")); return; }
   if (isOpen($("sheet"))) { if (e.key === "Escape") closeSheet(); else trap(e, $("sheet")); return; }
   if (isOpen($("scrim"))) {
@@ -1544,9 +1592,7 @@ $("hist-list").addEventListener("click", e => {
   if (e.target.closest("[data-more-hist]")) { histN += 200; renderHistory(); return; }
   const b = e.target.closest("button.x"); if (b) delPayment(Number(b.dataset.id), b.dataset.date);
 });
-async function delPayment(id, date) {
-  if (await ask("Remove this payment?", "Use this for a renewal you cancelled or didn't pay.", "Remove")) send({ cmd: "delete_payment", id, date });
-}
+function delPayment(id, date) { send({ cmd: "delete_payment", id, date }); }
 
 // ---------- settings ----------
 function renderSettings() {
@@ -1561,10 +1607,9 @@ function renderSettings() {
   $("s-update").textContent = st.updateStatus;
   document.querySelectorAll("#s-freq button").forEach(b => b.classList.toggle("on", b.dataset.v === st.updateFreq));
   $("s-install").style.display = st.latest ? "" : "none";
-  $("s-install").disabled = $("s-check").disabled = $("banner-btn").disabled = st.updateBusy;
-  $("s-install").innerHTML = $("banner-btn").innerHTML = ic("download") + `<span>${esc(st.updateBusy ? "Installing…" : st.latest ? `Install ${st.latest}` : "Install")}</span>`;
-  $("banner").classList.toggle("show", !!st.latest);
-  $("banner-t").textContent = `Subscribity ${st.latest} is available`;
+  $("s-install").disabled = $("s-check").disabled = st.updateBusy;
+  $("s-install").innerHTML = ic("download") + `<span>${esc(st.updateBusy ? "Installing…" : st.latest ? `Install ${st.latest}` : "Install")}</span>`;
+  { const sc = S.scan || {}; $("s-scan-sub").textContent = (sc.connected ? `Connected as ${sc.user}` : "Not connected") + ". Suggests subscriptions from your receipts."; }
   const bks = S.backups || [], bt = $("s-bk-toggle");
   $("s-backups").innerHTML = bks.map(b =>
     `<div><span>${esc(b.name.length > 10 ? fmtDate(b.name.slice(0, 10)) + b.name.slice(10) : fmtDate(b.name))}</span><button class="btn small" data-name="${esc(b.name)}">${ic("undo")}Restore</button></div>`).join("");
@@ -1800,8 +1845,7 @@ function renderScan() {
   const sc = S.scan || {};
   if (!SC.loaded) { SC.loaded = true; send({ cmd: "scan_list" }); }
   const reauth = sc.error === "auth", scanning = !!(sc.busy || SC.scanning), conn = !!sc.connected;
-  $("nav-badge").hidden = !(sc.pending > 0); $("nav-badge").textContent = sc.pending > 99 ? "99+" : String(sc.pending || "");
-  $("s-scan-sub").textContent = (conn ? `Connected as ${sc.user}` : "Not connected") + ". Suggests subscriptions from your receipts.";
+  renderNavBadge();
   $("sc-connect").hidden = scanning || (conn && !reauth);
   $("sc-connected").hidden = scanning || !conn || reauth;
   $("sc-scanning").hidden = !scanning;
@@ -1932,9 +1976,10 @@ function go(page) {
   document.querySelectorAll("nav button[data-page]").forEach(b => { const on = b.dataset.page === page; b.classList.toggle("active", on); if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.id === "page-" + page));
   $("main").scrollTop = 0;
-  if (page === "subs") { stag = true; if (S) renderSubs(); }
-  if (page === "calendar" && !cal) moveMonth(0);
-  if (page === "scan") { send({ cmd: "scan_seen" }); send({ cmd: "scan_list" }); if (S) renderScan(); }
+  if (page === "subs") { stag = true; dirty.delete("subs"); if (S) renderSubs(); }
+  if (page === "calendar" && !cal) { dirty.delete("calendar"); moveMonth(0); }
+  else if (page === "scan") { dirty.delete("scan"); send({ cmd: "scan_seen" }); send({ cmd: "scan_list" }); if (S) renderPage("scan"); }
+  else if (S && dirty.has(page)) renderPage(page);
 }
 document.querySelectorAll("nav button[data-page]").forEach(b => b.onclick = () => go(b.dataset.page));
 document.addEventListener("contextmenu", e => { if (!e.target.closest("input,textarea")) e.preventDefault(); });

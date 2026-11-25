@@ -44,6 +44,9 @@ const SETTINGS_KEYS: [&str; 19] = [
 ];
 /// Window toast when a data file couldn't be saved (or was left alone because it couldn't be read).
 pub const SAVE_FAILED: &str = "Couldn't save. Check that the data folder is available.";
+/// Window warning while subscriptions.tsv / settings.ini exist but can't be read.
+pub const SUBS_UNREADABLE: &str = "Your subscriptions file can't be read right now, so nothing can be saved. Check that the data folder is available.";
+pub const SETTINGS_UNREADABLE: &str = "Your settings file can't be read right now, so settings can't be saved. Check that the data folder is available.";
 const BACKUP_EVERY_DAYS: i32 = 7;
 const BACKUP_KEEP_DAYS: i32 = 30;
 
@@ -139,6 +142,35 @@ pub struct Payment {
     pub amount: f64,
     pub cur: String,
     pub name: String,
+}
+
+/// A data file couldn't be read or written; nothing was changed.
+#[derive(Debug)]
+pub struct SaveError;
+
+/// What the last delete in the window removed, kept in memory so it can be undone.
+#[derive(Clone)]
+pub enum Deleted {
+    /// The subscription row and its payment-log cursor (the tray drops the cursor of a missing
+    /// subscription; without it a restored one would log today's renewal a second time).
+    Sub(Sub, Option<i32>),
+    Payment(Payment),
+}
+
+impl Deleted {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Deleted::Sub(..) => "sub",
+            Deleted::Payment(_) => "payment",
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Deleted::Sub(s, _) => &s.name,
+            Deleted::Payment(p) => &p.name,
+        }
+    }
 }
 
 pub struct Store {
@@ -432,6 +464,41 @@ fn parse_history(s: &str) -> Vec<(i32, f64)> {
 }
 
 /// Defaults when settings.ini is missing; `Err` when it exists but can't be read.
+/// subscriptions.tsv (any version since v0.1.0: missing trailing columns get defaults); an
+/// empty list when the file doesn't exist, Err when it exists but can't be read.
+fn read_subs(dir: &Path) -> std::io::Result<Vec<Sub>> {
+    let mut subs = Vec::new();
+    for line in read_text(&dir.join(SUBS_FILE))?.unwrap_or_default().lines().skip(1) {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 12 {
+            continue;
+        }
+        let Ok(id) = f[0].parse::<u32>() else { continue };
+        subs.push(Sub {
+            id,
+            name: unesc(f[1]),
+            price: f[2].parse().unwrap_or(0.0),
+            cur: f[3].into(),
+            every: f[4].parse().unwrap_or(1),
+            unit: f[5].parse::<u8>().unwrap_or(2).min(3),
+            start: parse_iso(f[6]).unwrap_or(0),
+            category: unesc(f[7]),
+            payment: unesc(f[8]),
+            remind: f[9].parse().unwrap_or(3),
+            active: f[10] != "0",
+            notes: unesc(f[11]),
+            url: f.get(12).map(|u| unesc(u)).unwrap_or_default(),
+            trial: f.get(13).is_some_and(|t| *t == "1"),
+            history: f.get(14).map(|h| parse_history(h)).unwrap_or_default(),
+            icon: f.get(15).map(|u| unesc(u)).filter(|u| u.len() <= 300).unwrap_or_default(),
+            first: f.get(16).and_then(|d| parse_iso(d)).unwrap_or(0),
+            unused: f.get(17).and_then(|d| parse_iso(d)).unwrap_or(0),
+            manage: f.get(18).map(|u| unesc(u)).filter(|u| u.len() <= 200).unwrap_or_default(),
+        });
+    }
+    Ok(subs)
+}
+
 fn read_settings(dir: &Path) -> std::io::Result<Settings> {
     Ok(parse_settings(&read_text(&dir.join(SETTINGS_FILE))?.unwrap_or_default()))
 }
@@ -542,37 +609,9 @@ impl Store {
             subs_unreadable: false,
             state_saved: String::new(),
         };
-        let subs = read_text(&st.dir.join(SUBS_FILE));
-        st.subs_unreadable = subs.is_err();
-        if let Ok(Some(t)) = subs {
-            for line in t.lines().skip(1) {
-                let f: Vec<&str> = line.split('\t').collect();
-                if f.len() < 12 {
-                    continue;
-                }
-                let Ok(id) = f[0].parse::<u32>() else { continue };
-                st.subs.push(Sub {
-                    id,
-                    name: unesc(f[1]),
-                    price: f[2].parse().unwrap_or(0.0),
-                    cur: f[3].into(),
-                    every: f[4].parse().unwrap_or(1),
-                    unit: f[5].parse::<u8>().unwrap_or(2).min(3),
-                    start: parse_iso(f[6]).unwrap_or(0),
-                    category: unesc(f[7]),
-                    payment: unesc(f[8]),
-                    remind: f[9].parse().unwrap_or(3),
-                    active: f[10] != "0",
-                    notes: unesc(f[11]),
-                    url: f.get(12).map(|u| unesc(u)).unwrap_or_default(),
-                    trial: f.get(13).is_some_and(|t| *t == "1"),
-                    history: f.get(14).map(|h| parse_history(h)).unwrap_or_default(),
-                    icon: f.get(15).map(|u| unesc(u)).filter(|u| u.len() <= 300).unwrap_or_default(),
-                    first: f.get(16).and_then(|d| parse_iso(d)).unwrap_or(0),
-                    unused: f.get(17).and_then(|d| parse_iso(d)).unwrap_or(0),
-                    manage: f.get(18).map(|u| unesc(u)).filter(|u| u.len() <= 200).unwrap_or_default(),
-                });
-            }
+        match read_subs(&st.dir) {
+            Ok(subs) => st.subs = subs,
+            Err(_) => st.subs_unreadable = true,
         }
         if let Ok(t) = fs::read_to_string(st.dir.join(RATES_FILE)) {
             for line in t.lines() {
@@ -796,17 +835,102 @@ impl Store {
         changed
     }
 
-    /// False = payments.tsv couldn't be read or written (nothing changed on disk).
-    pub fn delete_payment(&mut self, sub_id: u32, date: i32) -> bool {
+    /// Removes one logged payment. Ok(None) = there was none; Err = payments.tsv couldn't be
+    /// read or written (nothing changed on disk or in memory).
+    pub fn delete_payment(&mut self, sub_id: u32, date: i32) -> Result<Option<Deleted>, SaveError> {
         if !self.reload_payments() {
-            return false;
+            return Err(SaveError);
         }
-        match self.payments.iter().position(|p| p.sub_id == sub_id && p.date == date) {
-            Some(i) => {
-                self.payments.remove(i);
-                self.save_payments()
+        let Some(i) = self.payments.iter().position(|p| p.sub_id == sub_id && p.date == date) else { return Ok(None) };
+        let p = self.payments.remove(i);
+        if !self.save_payments() {
+            self.payments.insert(i, p);
+            return Err(SaveError);
+        }
+        Ok(Some(Deleted::Payment(p)))
+    }
+
+    /// Removes subscription `id` (its logged payments stay, as before). Ok(None) = no such
+    /// subscription; Err = not saved (memory keeps it).
+    pub fn delete_sub(&mut self, id: u32) -> Result<Option<Deleted>, SaveError> {
+        let Some(i) = self.subs.iter().position(|s| s.id == id) else { return Ok(None) };
+        self.reload_payments(); // the cursor as the tray last wrote it (memory keeps the old one if unreadable)
+        let s = self.subs.remove(i);
+        if !self.save_subs() {
+            self.subs.insert(i, s);
+            return Err(SaveError);
+        }
+        let cursor = self.cursors.get(&id).copied();
+        Ok(Some(Deleted::Sub(s, cursor)))
+    }
+
+    /// Puts back exactly what a delete removed (same id and fields). A subscription goes back in
+    /// id order, its cursor first (so the tray never sees it without one). Err = not saved; the
+    /// subscriptions and payments in memory are as before the call.
+    pub fn undo_delete(&mut self, d: &Deleted) -> Result<(), SaveError> {
+        let needs_log = matches!(d, Deleted::Payment(_) | Deleted::Sub(_, Some(_)));
+        if needs_log && !self.reload_payments() {
+            return Err(SaveError);
+        }
+        match d {
+            Deleted::Payment(p) => {
+                let i = self.payments.partition_point(|x| x.date <= p.date);
+                self.payments.insert(i, p.clone());
+                if !self.save_payments() {
+                    self.payments.remove(i);
+                    return Err(SaveError);
+                }
             }
-            None => true,
+            Deleted::Sub(s, cursor) => {
+                if self.subs_unreadable {
+                    return Err(SaveError);
+                }
+                if self.subs.iter().any(|x| x.id == s.id) {
+                    return Ok(()); // already back (nothing to restore)
+                }
+                if let Some(c) = cursor {
+                    let old = self.cursors.insert(s.id, *c);
+                    if old != Some(*c) && !self.save_payments() {
+                        match old {
+                            Some(o) => self.cursors.insert(s.id, o),
+                            None => self.cursors.remove(&s.id),
+                        };
+                        return Err(SaveError);
+                    }
+                }
+                let i = self.subs.partition_point(|x| x.id < s.id);
+                self.subs.insert(i, s.clone());
+                if !self.save_subs() {
+                    self.subs.remove(i); // a cursor already written is dropped by the tray again
+                    return Err(SaveError);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Window warning text while a data file exists but can't be read (nothing can be saved).
+    pub fn data_error(&self) -> Option<&'static str> {
+        if self.subs_unreadable {
+            Some(SUBS_UNREADABLE)
+        } else if self.settings_unreadable {
+            Some(SETTINGS_UNREADABLE)
+        } else {
+            None
+        }
+    }
+
+    /// Re-reads only the files that couldn't be read, so the warning clears once they can be.
+    pub fn retry_unreadable(&mut self) {
+        if self.subs_unreadable {
+            if let Ok(subs) = read_subs(&self.dir) {
+                self.subs = subs;
+                self.subs_unreadable = false;
+                self.reload_payments();
+            }
+        }
+        if self.settings_unreadable {
+            self.reload_settings();
         }
     }
 
@@ -1101,7 +1225,7 @@ mod tests {
         assert_eq!(st.payments.iter().map(|p| p.date - d0).collect::<Vec<_>>(), vec![0, 7, 14]);
         st.log_payments(d0 + 15);
         assert_eq!(st.payments.len(), 3);
-        st.delete_payment(7, d0 + 7);
+        assert!(st.delete_payment(7, d0 + 7).unwrap().is_some());
         assert_eq!(Store::load(dir.clone()).payments.len(), 2);
         // A sub first seen long after its start is not backfilled.
         st.subs.push(Sub { id: 8, name: "Y".into(), price: 5.0, cur: "ILS".into(), every: 1, unit: 1, start: d0, active: true, ..Default::default() });
@@ -1224,7 +1348,7 @@ mod tests {
             let _lock = fs::OpenOptions::new().read(true).share_mode(0).open(dir.join(PAYMENTS_FILE)).unwrap();
             assert!(!st.reload_payments());
             assert!(!st.log_payments(d0 + 30));
-            assert!(!st.delete_payment(7, days_from_civil(2025, 12, 25)));
+            assert!(st.delete_payment(7, days_from_civil(2025, 12, 25)).is_err());
             assert_eq!(st.payments.len(), 1);
         }
         assert_eq!(fs::read_to_string(dir.join(PAYMENTS_FILE)).unwrap(), old);
@@ -1262,6 +1386,74 @@ mod tests {
         assert!(!st3.subs_unreadable && st3.save_subs());
         let _ = fs::remove_dir_all(dir);
         let _ = fs::remove_dir_all(dir2);
+    }
+
+    #[test]
+    fn undo_restores_deleted_sub_with_cursor_and_payment() {
+        let dir = temp_dir("undo");
+        let d0 = days_from_civil(2026, 3, 2);
+        let mut st = Store::load(dir.clone());
+        for (id, name) in [(1, "A"), (2, "B\tTab"), (3, "C")] {
+            st.subs.push(Sub { id, name: name.into(), price: 4.5, cur: "EUR".into(), every: 1, unit: 1, start: d0, active: true, notes: "n\nx".into(), history: vec![(d0 - 9, 3.0)], unused: d0, manage: "https://m.com/x".into(), ..Default::default() });
+        }
+        assert!(st.save_subs());
+        st.log_payments(d0); // a payment today for each sub + cursors at d0
+        let file = |n: &str| fs::read_to_string(dir.join(n)).unwrap();
+        let (subs_before, pay_before) = (file(SUBS_FILE), file(PAYMENTS_FILE));
+        let del = st.delete_sub(2).unwrap().unwrap();
+        assert_eq!((del.kind(), del.name()), ("sub", "B\tTab"));
+        assert!(matches!(del, Deleted::Sub(_, Some(c)) if c == d0));
+        assert!(Store::load(dir.clone()).subs.iter().all(|s| s.id != 2));
+        assert!(st.delete_sub(2).unwrap().is_none()); // gone: nothing to delete
+        // The tray drops the cursor of the missing sub before the undo comes in.
+        let mut tray = Store::load(dir.clone());
+        tray.log_payments(d0);
+        assert!(!Store::load(dir.clone()).cursors.contains_key(&2));
+        st.undo_delete(&del).unwrap();
+        assert_eq!(file(SUBS_FILE), subs_before); // same id, fields and position
+        let back = Store::load(dir.clone());
+        assert_eq!(back.cursors.get(&2), Some(&d0));
+        // Cursor back: the tray doesn't log today's renewal a second time.
+        let mut tray = Store::load(dir.clone());
+        assert!(!tray.log_payments(d0));
+        assert_eq!(tray.payments.len(), 3);
+        // A payment: deleted and put back exactly.
+        let del = st.delete_payment(3, d0).unwrap().unwrap();
+        assert_eq!((del.kind(), del.name()), ("payment", "C"));
+        assert_eq!(Store::load(dir.clone()).payments.len(), 2);
+        assert!(st.delete_payment(3, d0).unwrap().is_none());
+        st.undo_delete(&del).unwrap();
+        let mut a: Vec<&str> = pay_before.lines().collect();
+        let after = file(PAYMENTS_FILE);
+        let mut b: Vec<&str> = after.lines().collect();
+        a.sort();
+        b.sort(); // cursor lines come from a HashMap: order may differ
+        assert_eq!(a, b);
+        // Undo while subscriptions.tsv can't be read: refused, memory unchanged.
+        let del = st.delete_sub(1).unwrap().unwrap();
+        st.subs_unreadable = true;
+        assert!(st.undo_delete(&del).is_err() && st.subs.iter().all(|s| s.id != 1));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn data_error_while_unreadable_and_clears_on_retry() {
+        let dir = temp_dir("data-error");
+        fs::create_dir_all(dir.join(SUBS_FILE)).unwrap();
+        fs::create_dir_all(dir.join(SETTINGS_FILE)).unwrap();
+        let mut st = Store::load(dir.clone());
+        assert_eq!(st.data_error(), Some(SUBS_UNREADABLE));
+        st.retry_unreadable(); // still unreadable: unchanged
+        assert_eq!(st.data_error(), Some(SUBS_UNREADABLE));
+        fs::remove_dir(dir.join(SUBS_FILE)).unwrap();
+        fs::write(dir.join(SUBS_FILE), "id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\n3\tOld\t5\tUSD\t1\t2\t2026-10-16\t\t\t3\t1\t\n").unwrap();
+        st.retry_unreadable();
+        assert_eq!((st.data_error(), st.subs.len()), (Some(SETTINGS_UNREADABLE), 1));
+        fs::remove_dir(dir.join(SETTINGS_FILE)).unwrap();
+        fs::write(dir.join(SETTINGS_FILE), "main_currency=EUR\n").unwrap();
+        st.retry_unreadable();
+        assert_eq!((st.data_error(), st.settings.main_cur.as_str()), (None, "EUR"));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

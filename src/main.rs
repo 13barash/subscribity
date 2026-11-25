@@ -65,6 +65,9 @@ const WM_INSTALLED: u32 = 0x8000 + 9;
 const WM_SCAN: u32 = 0x8000 + 10; // scan thread -> window: wParam kind, lParam boxed result
 const WM_ICONS: u32 = 0x8000 + 11; // --icons helper -> tray and window: new icons cached
 const WM_MOVED: u32 = 0x8000 + 12; // data-folder move thread -> window: lParam boxed result
+const WM_WALL: u32 = 0x8000 + 13; // wallpaper thread -> window: wParam open number, lParam 1 = image ready
+/// Window opens in this process: the wallpaper URL's `?v=` (a fresh image per open, never cached).
+static WALL_OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 const OPEN_MOVED: usize = 5; // open code: Settings + "Data folder changed" (after a move)
 const OPEN_UNUSED: usize = 1_000_000; // open code + id: mark unused, show the savings sheet
 const TIMER_TICK: usize = 1;
@@ -103,6 +106,7 @@ struct App {
     scan_try: i32,        // tray: day the auto-scan was last started
     notice_page: usize,   // tray: open_window code for a click on the last notification
     moving: bool,         // window: data-folder move running (see datadir_ipc.rs)
+    last_deleted: Option<Deleted>, // window: the last delete, until undone or another change
 }
 
 static mut APP: *mut App = null_mut();
@@ -414,13 +418,27 @@ fn window_open() -> bool {
     unsafe { !FindWindowW(w("SubscribityWindow").as_ptr(), null()).is_null() }
 }
 
+/// A shown/seen reminder key (`<id>|<due day>`) stays while it is due, and for a subscription
+/// that is gone until its day passes (so undoing a delete doesn't show the reminder again).
+fn keep_reminder_key(k: &str, due: &HashSet<String>, ids: &HashSet<u32>, today: i32) -> bool {
+    if due.contains(k) {
+        return true;
+    }
+    match k.split_once('|').map(|(id, d)| (id.parse::<u32>(), d.parse::<i32>())) {
+        Some((Ok(id), Ok(d))) => !ids.contains(&id) && d >= today,
+        _ => false,
+    }
+}
+
 fn check_reminders(show_toast: bool) {
     let a = app();
     a.today = today();
     let due = due_list();
     let keys: HashSet<String> = due.iter().map(|d| d.key.clone()).collect();
-    a.store.notified.retain(|k| keys.contains(k));
-    a.store.ack.retain(|k| keys.contains(k));
+    let ids: HashSet<u32> = a.store.subs.iter().map(|s| s.id).collect();
+    let t = a.today;
+    a.store.notified.retain(|k| keep_reminder_key(k, &keys, &ids, t));
+    a.store.ack.retain(|k| keep_reminder_key(k, &keys, &ids, t));
     let fresh: Vec<&Due> = due.iter().filter(|d| !a.store.notified.contains(&d.key)).collect();
     if !fresh.is_empty() {
         for d in &fresh {
@@ -936,9 +954,19 @@ fn create_window(code: usize) {
     // Background look priority: OS acrylic > see-through > wallpaper glass > plain (the page paints
     // the tint). The window itself is always transparent outside the page's rounded body.
     let see = !glass;
-    let wall: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(if glass { Vec::new() } else { wallpaper::render().unwrap_or_default() });
-    static OPENS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-    a.wallpaper = if wall.is_empty() { String::new() } else { format!("http://icon.localhost/__wallpaper?v={}", OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) };
+    // Wallpaper glass: rendered on a worker while the WebView starts; WM_WALL then puts its URL
+    // in the state (usually before the page is ready, so the first state already has it).
+    let wall: std::sync::Arc<std::sync::OnceLock<Vec<u8>>> = Default::default();
+    a.wallpaper = String::new();
+    if !glass {
+        let (slot, win) = (wall.clone(), a.win as isize);
+        let v = WALL_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::thread::spawn(move || {
+            let bmp = wallpaper::render().unwrap_or_default();
+            let ok = !bmp.is_empty() && slot.set(bmp).is_ok();
+            unsafe { PostMessageW(win as HWND, WM_WALL, v as usize, ok as isize) };
+        });
+    }
     a.host = a.win;
     a.page_ready = false;
     a.pending.clear();
@@ -960,7 +988,7 @@ fn create_window(code: usize) {
         // http://icon.localhost/<host>?v=N → cached site icon (see plans/v0.4.0-a0.md).
         .with_custom_protocol("icon".into(), move |_, req| {
             if req.uri().path() == "/__wallpaper" {
-                actions::bmp_response(&wall)
+                actions::bmp_response(wall.get().map_or(&[][..], |b| &b[..]))
             } else {
                 actions::icon_response(&icon_dir, req.uri().path())
             }
@@ -1053,6 +1081,15 @@ fn send_js(v: &Value) {
 
 fn state_json() -> Value {
     let a = app();
+    if a.store.data_error().is_some() {
+        // A file that couldn't be read: try again (at most every 3 s; a missing drive can be slow).
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now = unsafe { GetTickCount64() };
+        if now.saturating_sub(LAST.load(std::sync::atomic::Ordering::Relaxed)) >= 3000 {
+            LAST.store(now, std::sync::atomic::Ordering::Relaxed);
+            a.store.retry_unreadable();
+        }
+    }
     let t = today();
     a.today = t;
     let st = &a.store;
@@ -1099,6 +1136,7 @@ fn state_json() -> Value {
         "frameless": true,
         "maximized": !app().win.is_null() && unsafe { IsZoomed(app().win) } != 0,
         "wallpaper": app().wallpaper,
+        "dataError": st.data_error(),
         "today": iso(t),
         "subs": subs,
         "payments": payments,
@@ -1191,6 +1229,14 @@ fn handle_ipc(body: &str) {
     if a.moving && !matches!(cmd, "ready" | "titlebar" | "drag" | "resize" | "win" | "calendar" | "open_release" | "open_support") {
         return;
     }
+    // Only the most recent delete can be undone: any other command that may change data drops it.
+    if !matches!(
+        cmd,
+        "undo_delete" | "ready" | "titlebar" | "drag" | "resize" | "win" | "calendar" | "open_manage" | "open_folder" | "open_url"
+            | "open_release" | "open_support" | "export" | "rates" | "update_check" | "scan_list" | "scan_seen"
+    ) {
+        a.last_deleted = None;
+    }
     match cmd {
         "ready" => {
             a.page_ready = true;
@@ -1264,16 +1310,30 @@ fn handle_ipc(body: &str) {
         }
         "delete" => {
             let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-            let before = a.store.subs.clone();
-            a.store.subs.retain(|s| s.id != id);
-            if !a.store.save_subs() {
-                a.store.subs = before;
+            match a.store.delete_sub(id) {
+                Err(_) => save_failed(),
+                Ok(None) => send_js(&state_json()),
+                Ok(Some(d)) => {
+                    send_js(&state_json());
+                    send_js(&json!({"type": "deleted", "kind": d.kind(), "name": d.name()}));
+                    a.last_deleted = Some(d);
+                    scan::subs_changed();
+                    after_change();
+                }
+            }
+        }
+        "undo_delete" => {
+            let Some(d) = a.last_deleted.take() else { return };
+            if a.store.undo_delete(&d).is_err() {
+                a.last_deleted = Some(d); // nothing changed: still undoable
                 save_failed();
                 return;
             }
             send_js(&state_json());
-            send_js(&json!({"type": "toast", "text": "Deleted"}));
-            scan::subs_changed();
+            send_js(&json!({"type": "toast", "text": "Restored"}));
+            if matches!(d, Deleted::Sub(..)) {
+                scan::subs_changed();
+            }
             after_change();
         }
         "import" => {
@@ -1300,13 +1360,16 @@ fn handle_ipc(body: &str) {
         }
         "delete_payment" => {
             let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-            if let Some(d) = parse_iso(&str_of(&msg, "date")) {
-                if !a.store.delete_payment(id, d) {
-                    save_failed();
-                    return;
-                }
-            }
+            let removed = match parse_iso(&str_of(&msg, "date")).map(|d| a.store.delete_payment(id, d)) {
+                Some(Err(_)) => return save_failed(),
+                Some(Ok(r)) => r,
+                None => None,
+            };
             send_js(&state_json());
+            if let Some(d) = removed {
+                send_js(&json!({"type": "deleted", "kind": d.kind(), "name": d.name()}));
+                a.last_deleted = Some(d);
+            }
         }
         "settings" => {
             let main = str_of(&msg, "main");
@@ -1477,6 +1540,17 @@ unsafe extern "system" fn win_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
         }
         WM_MOVED => {
             datadir::on_moved(lp);
+            0
+        }
+        WM_WALL => {
+            let a = app();
+            // Only for this window's latest open (a slow render from an earlier one is ignored).
+            if lp != 0 && h == a.win && wp + 1 == WALL_OPENS.load(std::sync::atomic::Ordering::Relaxed) {
+                a.wallpaper = format!("http://icon.localhost/__wallpaper?v={}", wp);
+                if a.page_ready {
+                    send_js(&state_json());
+                }
+            }
             0
         }
         WM_IPC => {
@@ -1763,6 +1837,7 @@ fn main() {
             scan_try: 0,
             notice_page: 0,
             moving: false,
+            last_deleted: None,
         }));
         let a = app();
         let exe_icon = LoadIconW(hinst, 1 as _);
@@ -1824,5 +1899,21 @@ fn main() {
         }
         trim_memory();
         run_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reminder_keys_of_missing_subs_stay_until_their_day() {
+        let due: HashSet<String> = HashSet::from(["1|100".to_string()]);
+        let ids: HashSet<u32> = HashSet::from([1, 2]);
+        assert!(keep_reminder_key("1|100", &due, &ids, 99)); // due now
+        assert!(!keep_reminder_key("2|100", &due, &ids, 99)); // sub exists, no longer due
+        assert!(keep_reminder_key("3|100", &due, &ids, 100)); // sub gone (undo may bring it back): until its day
+        assert!(!keep_reminder_key("3|99", &due, &ids, 100)); // its day passed
+        assert!(!keep_reminder_key("budget", &due, &ids, 100) && !keep_reminder_key("x|1", &due, &ids, 0));
     }
 }
