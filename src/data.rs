@@ -42,6 +42,8 @@ const SETTINGS_KEYS: [&str; 19] = [
     "scan_auto", "scan_period", "scan_last", "scan_new", "scan_error", "payment_methods",
     "categories", "scan_price_up",
 ];
+/// Window toast when a data file couldn't be saved (or was left alone because it couldn't be read).
+pub const SAVE_FAILED: &str = "Couldn't save. Check that the data folder is available.";
 const BACKUP_EVERY_DAYS: i32 = 7;
 const BACKUP_KEEP_DAYS: i32 = 30;
 
@@ -150,6 +152,11 @@ pub struct Store {
     pub payments: Vec<Payment>,
     pub cursors: HashMap<u32, i32>, // last day checked for payments, per subscription
     pub first_run: bool,
+    /// subscriptions.tsv exists but couldn't be read: save_subs refuses so it isn't overwritten.
+    pub subs_unreadable: bool,
+    /// settings.ini exists but couldn't be read: `settings` holds defaults, edits don't write.
+    pub settings_unreadable: bool,
+    state_saved: String, // state.tsv as last read or written: save_state skips identical writes
 }
 
 // ---------- dates (proleptic Gregorian, days since 1970-01-01) ----------
@@ -340,6 +347,42 @@ fn tmp_path(path: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
+/// Reads a whole text file. `Ok(None)` = the file doesn't exist; `Err` = it exists but can't be
+/// read (locked, permissions, a folder with that name) even after a few retries: callers must
+/// not overwrite it then. Invalid UTF-8 is decoded lossily instead of counting as missing.
+pub(crate) fn read_text(p: &Path) -> std::io::Result<Option<String>> {
+    let mut tries = 0;
+    loop {
+        match fs::read(p) {
+            Ok(b) => return Ok(Some(String::from_utf8_lossy(&b).into_owned())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                tries += 1;
+                if tries > 3 {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+/// Renames the finished temp file over `path`. Sync clients and antivirus can hold the target
+/// for a moment (sharing violation / access denied), so it retries; on failure the temp file
+/// is removed and the old file stays.
+fn replace_with(tmp: &Path, path: &Path) -> bool {
+    for i in 0..5 {
+        if fs::rename(tmp, path).is_ok() {
+            return true;
+        }
+        if i < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(50 + 15 * i));
+        }
+    }
+    let _ = fs::remove_file(tmp);
+    false
+}
+
 /// Temp file + flush to disk + rename, so a crash or power cut leaves the old file or the
 /// new one, never a half-written or empty one.
 pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> bool {
@@ -349,7 +392,11 @@ pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> bool {
         f.write_all(data.as_ref())?;
         f.sync_all()
     });
-    written.is_ok() && fs::rename(&tmp, path).is_ok()
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    replace_with(&tmp, path)
 }
 
 /// `dir\name`, or `dir\name 2`, `dir\name 3`... when that already exists.
@@ -368,7 +415,11 @@ pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
 pub(crate) fn copy_atomic(from: &Path, to: &Path) -> bool {
     let tmp = tmp_path(to);
     let copied = fs::copy(from, &tmp).and_then(|_| fs::OpenOptions::new().write(true).open(&tmp)?.sync_all());
-    copied.is_ok() && fs::rename(&tmp, to).is_ok()
+    if copied.is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    replace_with(&tmp, to)
 }
 
 fn parse_history(s: &str) -> Vec<(i32, f64)> {
@@ -380,16 +431,34 @@ fn parse_history(s: &str) -> Vec<(i32, f64)> {
         .collect()
 }
 
-fn read_settings(dir: &Path) -> Settings {
-    parse_settings(&fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap_or_default())
+/// Defaults when settings.ini is missing; `Err` when it exists but can't be read.
+fn read_settings(dir: &Path) -> std::io::Result<Settings> {
+    Ok(parse_settings(&read_text(&dir.join(SETTINGS_FILE))?.unwrap_or_default()))
+}
+
+/// Without a leading UTF-8 byte order mark (Notepad can add one).
+fn no_bom(t: &str) -> &str {
+    t.strip_prefix('\u{feff}').unwrap_or(t)
+}
+
+/// A settings.ini written by Subscribity: empty, or at least one line with a key we know.
+pub(crate) fn our_settings(t: &str) -> bool {
+    let t = no_bom(t);
+    t.trim().is_empty() || t.lines().any(|l| l.split_once('=').is_some_and(|(k, _)| SETTINGS_KEYS.contains(&k.trim())))
 }
 
 /// Lines with keys this version doesn't know (e.g. written by a newer version), kept as-is.
 fn unknown_settings(t: &str) -> String {
-    t.lines()
+    no_bom(t)
+        .lines()
         .filter(|l| l.split_once('=').is_some_and(|(k, _)| !k.trim().is_empty() && !SETTINGS_KEYS.contains(&k.trim())))
         .map(|l| format!("{}\n", l))
         .collect()
+}
+
+/// A currency code as stored: exactly 3 ASCII uppercase letters (ISO 4217 style).
+pub fn is_cur_code(c: &str) -> bool {
+    c.len() == 3 && c.bytes().all(|b| b.is_ascii_uppercase())
 }
 
 /// `scan_price_up=` items `id:price:cur` joined by `|`; malformed items are skipped.
@@ -400,7 +469,7 @@ fn parse_price_up(v: &str) -> Vec<(u32, f64, String)> {
             let id = p.next()?.parse::<u32>().ok()?;
             let price = p.next()?.parse::<f64>().ok().filter(|x| x.is_finite() && *x > 0.0)?;
             let cur = p.next()?.trim();
-            (cur.len() == 3 && cur.bytes().all(|b| b.is_ascii_uppercase())).then(|| (id, price, cur.to_string()))
+            is_cur_code(cur).then(|| (id, price, cur.to_string()))
         })
         .collect()
 }
@@ -421,7 +490,7 @@ pub fn clean_list(items: impl IntoIterator<Item = String>) -> Vec<String> {
 
 fn parse_settings(t: &str) -> Settings {
     let mut s = Settings::default();
-    for line in t.lines() {
+    for line in no_bom(t).lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
         let v = v.trim();
         match k.trim() {
@@ -457,9 +526,11 @@ fn parse_settings(t: &str) -> Settings {
 
 impl Store {
     pub fn load(dir: PathBuf) -> Store {
+        let settings = read_settings(&dir);
         let mut st = Store {
             first_run: !dir.join(SETTINGS_FILE).exists(),
-            settings: read_settings(&dir),
+            settings_unreadable: settings.is_err(),
+            settings: settings.unwrap_or_default(),
             dir,
             subs: Vec::new(),
             rates: HashMap::new(),
@@ -468,8 +539,12 @@ impl Store {
             price_alerted: HashSet::new(),
             payments: Vec::new(),
             cursors: HashMap::new(),
+            subs_unreadable: false,
+            state_saved: String::new(),
         };
-        if let Ok(t) = fs::read_to_string(st.dir.join(SUBS_FILE)) {
+        let subs = read_text(&st.dir.join(SUBS_FILE));
+        st.subs_unreadable = subs.is_err();
+        if let Ok(Some(t)) = subs {
             for line in t.lines().skip(1) {
                 let f: Vec<&str> = line.split('\t').collect();
                 if f.len() < 12 {
@@ -508,7 +583,7 @@ impl Store {
                 }
             }
         }
-        if let Ok(t) = fs::read_to_string(st.dir.join(STATE_FILE)) {
+        if let Ok(Some(t)) = read_text(&st.dir.join(STATE_FILE)) {
             for line in t.lines() {
                 match line.split_once('\t') {
                     Some(("n", k)) => { st.notified.insert(k.into()); }
@@ -518,11 +593,17 @@ impl Store {
                 }
             }
         }
+        st.state_saved = st.state_text();
         st.reload_payments();
         st
     }
 
-    pub fn save_subs(&self) {
+    /// Writes subscriptions.tsv. False = not saved (write failed, or the file on disk couldn't
+    /// be read at load and must not be overwritten with what's in memory).
+    pub fn save_subs(&self) -> bool {
+        if self.subs_unreadable {
+            return false;
+        }
         let mut t = String::from("id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\turl\ttrial\tprice_history\ticon\tfirst_charge\tunused_since\tmanage_url\n");
         let opt = |d: i32| if d > 0 { iso(d) } else { String::new() };
         for s in &self.subs {
@@ -535,13 +616,16 @@ impl Store {
                 opt(s.first), opt(s.unused), esc(&s.manage)
             ));
         }
-        write_atomic(&self.dir.join(SUBS_FILE), &t);
+        write_atomic(&self.dir.join(SUBS_FILE), &t)
     }
 
     /// Two processes (tray and window) write settings, so every change re-reads the file
-    /// first and only changes what it means to change.
-    pub fn edit_settings(&mut self, f: impl FnOnce(&mut Settings)) {
-        let old = fs::read_to_string(self.dir.join(SETTINGS_FILE)).unwrap_or_default();
+    /// first and only changes what it means to change. False = not saved: if settings.ini
+    /// exists but can't be read, nothing is written and the in-memory settings stay.
+    pub fn edit_settings(&mut self, f: impl FnOnce(&mut Settings)) -> bool {
+        let Ok(old) = read_text(&self.dir.join(SETTINGS_FILE)) else { return false };
+        let old = old.unwrap_or_default();
+        self.settings_unreadable = false;
         let mut s = parse_settings(&old);
         f(&mut s);
         let opt = |d: i32| if d > 0 { iso(d) } else { String::new() };
@@ -563,12 +647,21 @@ impl Store {
         let ups: Vec<String> = s.price_up.iter().map(|(id, p, c)| format!("{}:{}:{}", id, p, c)).collect();
         t.push_str(&format!("scan_price_up={}\n", ups.join("|")));
         t.push_str(&unknown_settings(&old));
-        write_atomic(&self.dir.join(SETTINGS_FILE), &t);
+        let ok = write_atomic(&self.dir.join(SETTINGS_FILE), &t);
         self.settings = s;
+        ok
     }
 
+    /// Re-reads settings.ini; if it exists but can't be read, the in-memory settings stay
+    /// (never swapped for defaults).
     pub fn reload_settings(&mut self) {
-        self.settings = read_settings(&self.dir);
+        match read_settings(&self.dir) {
+            Ok(s) => {
+                self.settings = s;
+                self.settings_unreadable = false;
+            }
+            Err(_) => self.settings_unreadable = true,
+        }
     }
 
     pub fn save_rates(&self) {
@@ -579,18 +672,23 @@ impl Store {
         write_atomic(&self.dir.join(RATES_FILE), &t);
     }
 
-    pub fn save_state(&self) {
-        let mut t = String::new();
-        for k in &self.notified {
-            t.push_str(&format!("n\t{}\n", k));
+    /// state.tsv content, sorted so the same state always gives the same text.
+    fn state_text(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        for (tag, set) in [("n", &self.notified), ("a", &self.ack), ("p", &self.price_alerted)] {
+            let mut keys: Vec<&String> = set.iter().collect();
+            keys.sort();
+            lines.extend(keys.into_iter().map(|k| format!("{}\t{}\n", tag, k)));
         }
-        for k in &self.ack {
-            t.push_str(&format!("a\t{}\n", k));
+        lines.concat()
+    }
+
+    /// Runs every tray tick: writes only when the state changed since it was loaded or saved.
+    pub fn save_state(&mut self) {
+        let t = self.state_text();
+        if t != self.state_saved && write_atomic(&self.dir.join(STATE_FILE), &t) {
+            self.state_saved = t;
         }
-        for k in &self.price_alerted {
-            t.push_str(&format!("p\t{}\n", k));
-        }
-        write_atomic(&self.dir.join(STATE_FILE), &t);
     }
 
     pub fn next_id(&self) -> u32 {
@@ -623,11 +721,13 @@ impl Store {
 
     // ---------- payment log ----------
 
-    pub fn reload_payments(&mut self) {
+    /// False = payments.tsv exists but can't be read: the in-memory log stays as it was and
+    /// must not be written back over the file.
+    pub fn reload_payments(&mut self) -> bool {
+        let Ok(t) = read_text(&self.dir.join(PAYMENTS_FILE)) else { return false };
         self.payments.clear();
         self.cursors.clear();
-        let Ok(t) = fs::read_to_string(self.dir.join(PAYMENTS_FILE)) else { return };
-        for line in t.lines() {
+        for line in t.unwrap_or_default().lines() {
             let f: Vec<&str> = line.split('\t').collect();
             match f.first() {
                 Some(&"p") if f.len() >= 6 => {
@@ -643,9 +743,10 @@ impl Store {
                 _ => {}
             }
         }
+        true
     }
 
-    fn save_payments(&self) {
+    fn save_payments(&self) -> bool {
         let mut t = String::new();
         for p in &self.payments {
             t.push_str(&format!("p\t{}\t{}\t{}\t{}\t{}\n", p.sub_id, iso(p.date), p.amount, p.cur, esc(&p.name)));
@@ -653,13 +754,17 @@ impl Store {
         for (id, d) in &self.cursors {
             t.push_str(&format!("c\t{}\t{}\n", id, iso(*d)));
         }
-        write_atomic(&self.dir.join(PAYMENTS_FILE), &t);
+        write_atomic(&self.dir.join(PAYMENTS_FILE), &t)
     }
 
     /// Logs every renewal that happened since the last check. History starts on the day a
     /// subscription is first seen; paused subscriptions are skipped. Returns true if changed.
+    /// Does nothing while payments.tsv or subscriptions.tsv can't be read (an empty list
+    /// would drop every cursor).
     pub fn log_payments(&mut self, today: i32) -> bool {
-        self.reload_payments();
+        if !self.reload_payments() || self.subs_unreadable {
+            return false;
+        }
         let mut changed = false;
         let known: HashSet<u32> = self.subs.iter().map(|s| s.id).collect();
         let before = self.cursors.len();
@@ -691,11 +796,17 @@ impl Store {
         changed
     }
 
-    pub fn delete_payment(&mut self, sub_id: u32, date: i32) {
-        self.reload_payments();
-        if let Some(i) = self.payments.iter().position(|p| p.sub_id == sub_id && p.date == date) {
-            self.payments.remove(i);
-            self.save_payments();
+    /// False = payments.tsv couldn't be read or written (nothing changed on disk).
+    pub fn delete_payment(&mut self, sub_id: u32, date: i32) -> bool {
+        if !self.reload_payments() {
+            return false;
+        }
+        match self.payments.iter().position(|p| p.sub_id == sub_id && p.date == date) {
+            Some(i) => {
+                self.payments.remove(i);
+                self.save_payments()
+            }
+            None => true,
         }
     }
 
@@ -866,7 +977,7 @@ mod tests {
         let mut window = Store::load(dir.clone());
         tray.edit_settings(|s| s.rates_date = 123);
         window.edit_settings(|s| s.budget = 200.0);
-        let s = read_settings(&dir);
+        let s = read_settings(&dir).unwrap();
         assert_eq!((s.rates_date, s.budget), (123, 200.0));
         let _ = fs::remove_dir_all(dir);
     }
@@ -877,9 +988,9 @@ mod tests {
         let mut st = Store::load(dir.clone());
         assert!(st.settings.pay_methods.is_none()); // older settings.ini: never edited
         st.edit_settings(|s| s.pay_methods = Some(clean_list(["  Visa 4242 ".into(), "visa 4242".into(), "a|b".into(), "".into()])));
-        assert_eq!(read_settings(&dir).pay_methods.unwrap(), vec!["Visa 4242".to_string(), "a b".to_string()]);
+        assert_eq!(read_settings(&dir).unwrap().pay_methods.unwrap(), vec!["Visa 4242".to_string(), "a b".to_string()]);
         st.edit_settings(|s| s.pay_methods = Some(Vec::new())); // all removed stays "edited", not None
-        assert_eq!(read_settings(&dir).pay_methods, Some(Vec::new()));
+        assert_eq!(read_settings(&dir).unwrap().pay_methods, Some(Vec::new()));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -895,16 +1006,16 @@ mod tests {
         });
         let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
         assert!(t.contains("scan_price_up=12:17.99:USD|40:54.9:ILS\n"), "{}", t);
-        let s = read_settings(&dir);
+        let s = read_settings(&dir).unwrap();
         assert_eq!(s.categories.clone().unwrap(), vec!["Streaming".to_string(), "AI".into(), "x".repeat(40)]);
         assert_eq!(s.price_up, vec![(12, 17.99, "USD".to_string()), (40, 54.9, "ILS".to_string())]);
         // Each key is written once; other edits keep them.
         st.edit_settings(|s| s.budget = 5.0);
         let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
         assert_eq!((t.matches("categories=").count(), t.matches("scan_price_up=").count()), (1, 1));
-        assert_eq!(read_settings(&dir).price_up.len(), 2);
+        assert_eq!(read_settings(&dir).unwrap().price_up.len(), 2);
         st.edit_settings(|s| s.categories = Some(Vec::new()));
-        assert_eq!(read_settings(&dir).categories, Some(Vec::new()));
+        assert_eq!(read_settings(&dir).unwrap().categories, Some(Vec::new()));
         // Malformed items are skipped, good ones kept.
         let p = parse_price_up("1:2.5:USD|x:1:USD|2::USD|3:-1:USD|4:9:usd|5:9|6:inf:USD||7:3:EUR");
         assert_eq!(p, vec![(1, 2.5, "USD".to_string()), (7, 3.0, "EUR".to_string())]);
@@ -1034,7 +1145,7 @@ mod tests {
         let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
         assert!(t.contains("theme=system\n") && t.contains("future_key=a=b\n"));
         assert_eq!(t.matches("future_key").count(), 1);
-        let s = read_settings(&dir);
+        let s = read_settings(&dir).unwrap();
         assert_eq!((s.main_cur.as_str(), s.budget, s.window), ("EUR", 50.0, (1, 2, 800, 600)));
         assert!(!dir.join("settings.ini.tmp").exists());
         // v0.3.0 scan keys: defaults for a v0.1.0 file, then they round-trip and the old keys stay.
@@ -1046,7 +1157,7 @@ mod tests {
             s.scan_new = 3;
             s.scan_error = "auth".into();
         });
-        let s = read_settings(&dir);
+        let s = read_settings(&dir).unwrap();
         assert_eq!((s.scan_auto, s.scan_period, s.scan_last, s.scan_new, s.scan_error.as_str()), (true, 6, days_from_civil(2026, 11, 1), 3, "auth"));
         assert_eq!((s.main_cur.as_str(), s.window), ("EUR", (1, 2, 800, 600)));
         let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
@@ -1059,7 +1170,7 @@ mod tests {
         st.edit_settings(|s| s.window = (3, 4, 900, 700));
         let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
         assert_eq!((t.matches("see_through=").count(), t.matches("future_key").count()), (1, 1));
-        assert_eq!((read_settings(&dir).main_cur.as_str(), read_settings(&dir).window), ("EUR", (3, 4, 900, 700)));
+        assert_eq!((read_settings(&dir).unwrap().main_cur.as_str(), read_settings(&dir).unwrap().window), ("EUR", (3, 4, 900, 700)));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1097,5 +1208,124 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join(format!("{} before restore 2", iso(d + 1))).join(SUBS_FILE)).unwrap(), "v1");
         assert!(!st.restore("../x", d + 1) && !st.restore("2026-05-05", d + 1));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unreadable_payments_are_never_overwritten() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = temp_dir("pay-locked");
+        let d0 = days_from_civil(2026, 1, 1);
+        let old = "p\t7\t2025-12-25\t10\tILS\tX\nc\t7\t2025-12-31\n";
+        fs::write(dir.join(PAYMENTS_FILE), old).unwrap();
+        let mut st = Store::load(dir.clone());
+        st.subs.push(Sub { id: 7, name: "X".into(), price: 10.0, cur: "ILS".into(), every: 1, unit: 1, start: d0, active: true, ..Default::default() });
+        {
+            // Locked by another program (no sharing): nothing is written, memory keeps the log.
+            let _lock = fs::OpenOptions::new().read(true).share_mode(0).open(dir.join(PAYMENTS_FILE)).unwrap();
+            assert!(!st.reload_payments());
+            assert!(!st.log_payments(d0 + 30));
+            assert!(!st.delete_payment(7, days_from_civil(2025, 12, 25)));
+            assert_eq!(st.payments.len(), 1);
+        }
+        assert_eq!(fs::read_to_string(dir.join(PAYMENTS_FILE)).unwrap(), old);
+        assert!(!dir.join("payments.tsv.tmp").exists());
+        // A folder with that name can't be read either.
+        let dir2 = temp_dir("pay-dir");
+        fs::create_dir_all(dir2.join(PAYMENTS_FILE)).unwrap();
+        let mut st2 = Store::load(dir2.clone());
+        st2.subs = st.subs.clone();
+        assert!(!st2.log_payments(d0) && dir2.join(PAYMENTS_FILE).is_dir());
+        // Readable again: logging works.
+        assert!(st.log_payments(d0 + 30) && st.payments.len() > 1);
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir2);
+    }
+
+    #[test]
+    fn invalid_utf8_subs_load_lossy_and_unreadable_subs_are_not_saved() {
+        let dir = temp_dir("subs-lossy");
+        let mut bytes = b"id\tname\tprice\tcurrency\tevery\tunit\tfirst_payment\tcategory\tpayment_method\tremind_days\tactive\tnotes\n".to_vec();
+        bytes.extend_from_slice(b"3\tOld \xff\xfe\t5\tILS\t1\t2\t2026-10-16\t\t\t3\t1\t\n");
+        fs::write(dir.join(SUBS_FILE), &bytes).unwrap();
+        let st = Store::load(dir.clone());
+        assert!(!st.subs_unreadable && st.subs.len() == 1 && st.subs[0].name.starts_with("Old \u{fffd}"));
+        // Exists but unreadable (a folder here): save refuses, the payment log isn't touched.
+        let dir2 = temp_dir("subs-dir");
+        fs::create_dir_all(dir2.join(SUBS_FILE)).unwrap();
+        let mut st2 = Store::load(dir2.clone());
+        assert!(st2.subs_unreadable && !st2.save_subs() && !st2.log_payments(days_from_civil(2026, 1, 1)));
+        assert!(dir2.join(SUBS_FILE).is_dir() && !dir2.join(PAYMENTS_FILE).exists());
+        // Readable again: loading clears the flag.
+        fs::remove_dir(dir2.join(SUBS_FILE)).unwrap();
+        fs::write(dir2.join(SUBS_FILE), &bytes).unwrap();
+        let st3 = Store::load(dir2.clone());
+        assert!(!st3.subs_unreadable && st3.save_subs());
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir2);
+    }
+
+    #[test]
+    fn settings_with_bom_parse_and_unreadable_settings_stay() {
+        assert_eq!(parse_settings("\u{feff}main_currency=EUR\r\nbudget=9\r\n").main_cur, "EUR");
+        assert_eq!(unknown_settings("\u{feff}main_currency=EUR\nfoo=1\n"), "foo=1\n");
+        assert!(our_settings("") && our_settings("\u{feff}main_currency=ILS\n") && !our_settings("[General]\nfoo=1\n"));
+        let dir = temp_dir("settings-bom");
+        fs::write(dir.join(SETTINGS_FILE), "\u{feff}main_currency=EUR\nfoo=1\n").unwrap();
+        let mut st = Store::load(dir.clone());
+        assert_eq!(st.settings.main_cur, "EUR");
+        assert!(st.edit_settings(|s| s.budget = 7.0));
+        let t = fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap();
+        assert!(t.starts_with("main_currency=EUR\n") && t.contains("\nfoo=1\n") && !t.contains("\u{feff}"));
+        // Unreadable settings.ini: no write, the in-memory settings are kept (not defaults).
+        fs::remove_file(dir.join(SETTINGS_FILE)).unwrap();
+        fs::create_dir_all(dir.join(SETTINGS_FILE)).unwrap();
+        st.reload_settings();
+        assert!(st.settings_unreadable && st.settings.main_cur == "EUR" && st.settings.budget == 7.0);
+        assert!(!st.edit_settings(|s| s.budget = 1.0) && st.settings.budget == 7.0);
+        assert!(dir.join(SETTINGS_FILE).is_dir());
+        let fresh = Store::load(dir.clone());
+        assert!(fresh.settings_unreadable && !fresh.first_run);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_state_skips_identical_writes() {
+        let dir = temp_dir("state-skip");
+        let mut st = Store::load(dir.clone());
+        st.save_state();
+        assert!(!dir.join(STATE_FILE).exists()); // nothing to save yet
+        st.notified.insert("1|2026-11-01".into());
+        st.ack.insert("budget".into());
+        st.save_state();
+        assert_eq!(fs::read_to_string(dir.join(STATE_FILE)).unwrap(), "n\t1|2026-11-01\na\tbudget\n");
+        fs::write(dir.join(STATE_FILE), "marker").unwrap();
+        st.save_state(); // unchanged: no write
+        assert_eq!(fs::read_to_string(dir.join(STATE_FILE)).unwrap(), "marker");
+        fs::write(dir.join(STATE_FILE), "n\tb\nn\ta\n").unwrap();
+        let mut back = Store::load(dir.clone());
+        back.save_state(); // loaded content is the baseline, even in another order
+        assert_eq!(fs::read_to_string(dir.join(STATE_FILE)).unwrap(), "n\tb\nn\ta\n");
+        back.price_alerted.insert("3|9.99".into());
+        back.save_state();
+        assert_eq!(fs::read_to_string(dir.join(STATE_FILE)).unwrap(), "n\ta\nn\tb\np\t3|9.99\n");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_atomic_failure_leaves_target_and_no_temp() {
+        let dir = temp_dir("atomic");
+        fs::create_dir_all(dir.join("x.tsv")).unwrap(); // a folder can't be replaced by a file
+        assert!(!write_atomic(&dir.join("x.tsv"), "data"));
+        assert!(dir.join("x.tsv").is_dir() && !dir.join("x.tsv.tmp").exists());
+        fs::write(dir.join("src.tsv"), "abc").unwrap();
+        assert!(!copy_atomic(&dir.join("src.tsv"), &dir.join("x.tsv")) && !dir.join("x.tsv.tmp").exists());
+        assert!(copy_atomic(&dir.join("src.tsv"), &dir.join("y.tsv")) && fs::read_to_string(dir.join("y.tsv")).unwrap() == "abc");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn currency_codes_are_three_ascii_capitals() {
+        assert!(is_cur_code("EUR") && is_cur_code("ILS"));
+        assert!(!is_cur_code("eur") && !is_cur_code("EU") && !is_cur_code("EURO") && !is_cur_code("ÜR") && !is_cur_code("E1R"));
     }
 }

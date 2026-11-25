@@ -33,6 +33,8 @@ pub fn get(url: &str, limit: usize) -> Result<Vec<u8>, String> {
         if ses.is_null() {
             return Err("network unavailable".into());
         }
+        // A stalled network fails instead of hanging (resolve, connect, send, receive; ms).
+        WinHttpSetTimeouts(ses, 10_000, 10_000, 30_000, 30_000);
         let con = WinHttpConnect(ses, w(host).as_ptr(), 443, 0);
         let req = if con.is_null() { null_mut() } else {
             WinHttpOpenRequest(con, w("GET").as_ptr(), w(path).as_ptr(), null(), null(), null(), 0x0080_0000 /* secure */)
@@ -149,7 +151,12 @@ pub fn download_verified(rel: &Release) -> Result<Vec<u8>, String> {
 pub fn swap_in(exe_path: &Path, new_exe: &[u8]) -> Result<(), String> {
     let new_path = exe_path.with_extension("exe.new");
     let old_path = exe_path.with_extension("exe.old");
-    std::fs::write(&new_path, new_exe).map_err(|e| format!("could not save the update: {}", e))?;
+    // Flushed to disk before the renames, so a power cut can't leave a partial exe in place.
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&new_path).map_err(|e| format!("could not save the update: {}", e))?;
+        f.write_all(new_exe).and_then(|_| f.sync_all()).map_err(|e| format!("could not save the update: {}", e))?;
+    }
     let _ = std::fs::remove_file(&old_path);
     std::fs::rename(exe_path, &old_path).map_err(|e| format!("could not replace the app: {}", e))?;
     if let Err(e) = std::fs::rename(&new_path, exe_path) {

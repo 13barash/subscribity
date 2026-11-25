@@ -107,8 +107,15 @@ fn inside(child: &Path, parent: &Path) -> bool {
     norm(child).starts_with(&format!("{}\\", norm(parent)))
 }
 
+/// Holds Subscribity data: a subscriptions.tsv, or a settings.ini that is ours (empty, or with
+/// one of our keys; one that can't be read counts too, to be safe). Another app's settings.ini
+/// (e.g. "[General]") in a chosen folder doesn't.
 pub fn has_data(dir: &Path) -> bool {
-    dir.join(SETTINGS_FILE).is_file() || dir.join(SUBS_FILE).is_file()
+    if dir.join(SUBS_FILE).is_file() {
+        return true;
+    }
+    let ini = dir.join(SETTINGS_FILE);
+    ini.is_file() && crate::data::read_text(&ini).map_or(true, |t| t.is_none_or(|t| crate::data::our_settings(&t)))
 }
 
 /// Exists and takes a file (written and deleted right away).

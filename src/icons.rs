@@ -89,7 +89,8 @@ fn upsize(path: &str) -> String {
 }
 
 /// Download sources for `key`, best first (empty for a key we never fetch). A domain: its own
-/// apple-touch-icon (usually 180 px; redirects are not followed, so the apex then `www.`), then
+/// apple-touch-icon (usually 180 px; https redirects are followed, but some sites only serve it
+/// on one of the two names without redirecting, so the apex then `www.`), then
 /// Google's favicon (up to 256 px), then DuckDuckGo's (often 16-48 px). Artwork: the 256 px rendition, then the URL as stored.
 fn candidates(key: &str) -> Vec<(String, String)> {
     let Some(src) = source(key) else { return Vec::new() };
@@ -113,9 +114,14 @@ fn candidates(key: &str) -> Vec<(String, String)> {
 
 /// Google's favicon cache at its largest native size (up to 256 px). Answers 404 (a 16 px globe
 /// body, which `fetch` drops as non-200) for sites it has no icon of, so no default is ever used.
-/// The `google.com/s2/favicons` URL only redirects here, and redirects are not followed.
+/// The `google.com/s2/favicons` URL only redirects here; asking here directly saves a round trip.
 fn google(d: &str) -> (String, String) {
     ("t1.gstatic.com".into(), format!("/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://{d}&size=256"))
+}
+
+/// A server answered (any status, or a body); `Err(0)` is no answer: offline, timeout, cut off.
+fn got_answer(r: &Result<Vec<u8>, u32>) -> bool {
+    !matches!(r, Err(0))
 }
 
 /// Whether to download: no image yet, and no failure marker younger than 7 days.
@@ -184,7 +190,8 @@ fn keeps(best: &Option<(Vec<u8>, u32)>, w: u32) -> bool {
 
 /// Downloads up to `max` missing icons for `keys` (all subs' keys, popup rows first), writes
 /// them to the cache and prunes files no key refers to. Returns how many new images were saved.
-/// Stops at the first network error (offline: nothing is marked, the next run tries again).
+/// Stops at the first icon no source answered at all (offline: nothing is marked, the next run
+/// tries again).
 /// Helper process only: loads gdiplus.dll.
 pub fn fetch_missing(dir: &Path, keys: &[String], max: usize) -> u32 {
     let root = dir.join(DIR);
@@ -201,14 +208,15 @@ pub fn fetch_missing(dir: &Path, keys: &[String], max: usize) -> u32 {
     for k in todo {
         let p = path(dir, k);
         // Best source first; the first that decodes at GOOD px or more wins, else the largest
-        // decoded one. Only the last source answering nothing at all (and nothing decoded)
-        // means offline (a hanging own-site just falls through).
+        // decoded one. Offline only if no source answered at all (a hanging own-site or a
+        // blocked DuckDuckGo just falls through; any HTTP answer, even 404, means online).
         let cands = candidates(k);
         let mut img: Option<(Vec<u8>, u32)> = None;
-        let mut offline = false;
-        for (i, (host, url_path)) in cands.iter().enumerate() {
-            match appstore::fetch(host, url_path) {
-                Err(0) if i + 1 == cands.len() => offline = img.is_none(),
+        let mut answered = false;
+        for (host, url_path) in &cands {
+            let r = appstore::fetch(host, url_path);
+            answered |= got_answer(&r);
+            match r {
                 Err(_) => {}
                 Ok(body) => {
                     if let Some((bmp, w)) = convert(&body, &mut gdip, &p.with_extension("tmp")) {
@@ -218,11 +226,11 @@ pub fn fetch_missing(dir: &Path, keys: &[String], max: usize) -> u32 {
                     }
                 }
             }
-            if img.as_ref().is_some_and(|(_, w)| *w >= GOOD) || offline {
+            if img.as_ref().is_some_and(|(_, w)| *w >= GOOD) {
                 break;
             }
         }
-        if offline {
+        if !answered {
             break;
         }
         match img.map(|(b, _)| b) {
@@ -531,6 +539,17 @@ mod tests {
         assert!(!due(false, Some(6 * day)));
         assert!(due(false, Some(7 * day)));
         assert!(due(false, Some(30 * day)));
+    }
+
+    #[test]
+    fn icons_offline_only_without_any_answer() {
+        let any = |rs: &[Result<Vec<u8>, u32>]| rs.iter().fold(false, |a, r| a | got_answer(r));
+        // Own site hangs, www hangs, Google 404, DuckDuckGo blocked: online, so a marker is written.
+        assert!(any(&[Err(0), Err(0), Err(404), Err(0)]));
+        assert!(any(&[Err(0), Ok(vec![1])]));
+        assert!(any(&[Err(413)]));
+        // Nothing answered at all: offline, nothing marked.
+        assert!(!any(&[Err(0), Err(0), Err(0), Err(0)]));
     }
 
     #[test]

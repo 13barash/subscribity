@@ -26,7 +26,8 @@ fn encode(s: &str) -> String {
         .collect()
 }
 
-/// HTTPS GET of `path` on `host`, 5 s timeouts, no redirects followed, body up to 256 KB.
+/// HTTPS GET of `path` on `host`, 5 s timeouts, body up to 256 KB. Redirects to https are
+/// followed (e.g. apex → www); a redirect from https down to http is not.
 pub(crate) fn get(host: &str, path: &str) -> Option<Vec<u8>> {
     fetch(host, path).ok()
 }
@@ -46,7 +47,7 @@ pub(crate) fn fetch(host: &str, path: &str) -> Result<Vec<u8>, u32> {
         };
         let mut out = Err(0);
         if !req.is_null() {
-            let mut policy = 1u32; // WINHTTP_OPTION_REDIRECT_POLICY_NEVER
+            let mut policy = 1u32; // WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP: https→https redirects are followed
             WinHttpSetOption(req, 88 /* REDIRECT_POLICY */, &mut policy as *mut u32 as *mut c_void, 4);
             if WinHttpSendRequest(req, null(), 0, null(), 0, 0, 0) != 0 && WinHttpReceiveResponse(req, null_mut()) != 0 {
                 let (mut status, mut size) = (0u32, 4u32);

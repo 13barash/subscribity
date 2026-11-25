@@ -36,7 +36,6 @@ use std::num::NonZeroIsize;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::Networking::WinHttp::*;
 use windows_sys::Win32::System::LibraryLoader::*;
 use windows_sys::Win32::System::SystemInformation::*;
 use windows_sys::Win32::System::Threading::*;
@@ -260,6 +259,14 @@ fn make_icon(count: i32) -> HICON {
         ReleaseDC(null_mut(), screen);
         let mut bits: *mut c_void = null_mut();
         let bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if bmp.is_null() || bits.is_null() {
+            // Out of GDI resources: no icon this time (callers keep the old one).
+            if !bmp.is_null() {
+                DeleteObject(bmp);
+            }
+            DeleteDC(dc);
+            return null_mut();
+        }
         let old = SelectObject(dc, bmp);
         let px = std::slice::from_raw_parts_mut(bits as *mut u32, (sz * sz) as usize);
         px.fill(0);
@@ -337,10 +344,13 @@ fn set_badge(count: i32, tip: &str) {
     copy_w(&mut nid.szTip, tip);
     let old = a.icon;
     if count != a.badge {
-        a.icon = make_icon(count);
-        a.badge = count;
-        nid.uFlags |= NIF_ICON;
-        nid.hIcon = a.icon;
+        let icon = make_icon(count);
+        if !icon.is_null() {
+            a.icon = icon;
+            a.badge = count;
+            nid.uFlags |= NIF_ICON;
+            nid.hIcon = a.icon;
+        }
     }
     unsafe {
         Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -640,47 +650,12 @@ fn maybe_fetch_rates(force: bool) {
     a.rates_try = slot;
     let host = a.host as isize;
     std::thread::spawn(move || {
-        let result = http_get("open.er-api.com", &format!("/v6/latest/{}", main))
+        let result = scan::appstore::get("open.er-api.com", &format!("/v6/latest/{}", main))
+            .and_then(|body| String::from_utf8(body).ok())
             .and_then(|body| parse_rates(&body))
             .map(|r| (main, r));
         unsafe { PostMessageW(host as HWND, WM_RATES, 0, Box::into_raw(Box::new(result)) as isize) };
     });
-}
-
-fn http_get(host: &str, path: &str) -> Option<String> {
-    unsafe {
-        let ses = WinHttpOpen(w(APP_NAME).as_ptr(), 4 /* automatic proxy */, null(), null(), 0);
-        if ses.is_null() {
-            return None;
-        }
-        let mut out = None;
-        let con = WinHttpConnect(ses, w(host).as_ptr(), 443, 0);
-        if !con.is_null() {
-            let req = WinHttpOpenRequest(con, w("GET").as_ptr(), w(path).as_ptr(), null(), null(), null(), 0x0080_0000 /* secure */);
-            if !req.is_null() {
-                if WinHttpSendRequest(req, null(), 0, null(), 0, 0, 0) != 0 && WinHttpReceiveResponse(req, null_mut()) != 0 {
-                    let mut body = Vec::new();
-                    loop {
-                        let mut avail = 0u32;
-                        if WinHttpQueryDataAvailable(req, &mut avail) == 0 || avail == 0 || body.len() > 1 << 20 {
-                            break;
-                        }
-                        let mut buf = vec![0u8; avail as usize];
-                        let mut read = 0u32;
-                        if WinHttpReadData(req, buf.as_mut_ptr() as *mut c_void, avail, &mut read) == 0 || read == 0 {
-                            break;
-                        }
-                        body.extend_from_slice(&buf[..read as usize]);
-                    }
-                    out = String::from_utf8(body).ok();
-                }
-                WinHttpCloseHandle(req);
-            }
-            WinHttpCloseHandle(con);
-        }
-        WinHttpCloseHandle(ses);
-        out
-    }
 }
 
 fn rates_status() -> String {
@@ -782,6 +757,7 @@ fn on_update(lp: LPARAM) {
         }
     }
     send_js(&state_json());
+    trim_memory();
 }
 
 fn install_update() {
@@ -892,17 +868,29 @@ fn apply_open_code(code: usize) {
     if code >= OPEN_UNUSED {
         let id = (code - OPEN_UNUSED) as u32;
         if actions::set_unused(&mut a.store, id, true, today()) {
-            a.store.save_subs();
-            after_change();
+            if a.store.save_subs() {
+                after_change();
+            } else {
+                save_failed();
+            }
         }
     }
 }
 
-/// Window process: data changed, the tray reloads it.
+/// A save was refused or failed: tell the window and resend the state (the UI clears its
+/// saving flag on 'state'), so it never says "Saved".
+fn save_failed() {
+    send_js(&json!({"type": "toast", "text": data::SAVE_FAILED}));
+    send_js(&state_json());
+}
+
+/// Window process: data changed, the tray reloads it. The tray is looked up now (it may
+/// have restarted since the window opened); the HWND from window start is the fallback.
 fn after_change() {
     let a = app();
     if a.window_mode {
-        unsafe { PostMessageW(a.tray, WM_RELOAD, 0, 0) };
+        let now = unsafe { FindWindowW(w("SubscribityHost").as_ptr(), null()) };
+        unsafe { PostMessageW(if now.is_null() { a.tray } else { now }, WM_RELOAD, 0, 0) };
     } else {
         check_reminders(true);
     }
@@ -1173,7 +1161,7 @@ fn sub_from_json(s: &Value, id: u32, default_cur: &str, default_remind: i32) -> 
         id,
         name,
         price,
-        cur: if cur.len() == 3 { cur } else { default_cur.to_string() },
+        cur: if data::is_cur_code(&cur) { cur } else { default_cur.to_string() },
         every: s.get("every").and_then(|x| x.as_u64()).unwrap_or(1).clamp(1, 999) as u32,
         unit: s.get("unit").and_then(|x| x.as_u64()).unwrap_or(2).min(3) as u8,
         start,
@@ -1228,6 +1216,7 @@ fn handle_ipc(body: &str) {
             }
             // Before storing: a never-edited list is materialized from the current values first.
             actions::remember_in_lists(&mut a.store, &sub.category, &sub.payment);
+            let before = a.store.subs.clone();
             if let Some(i) = existing {
                 let old = &a.store.subs[i];
                 // `unused` is never in the form: editing keeps the flag. A missing `manage` keeps
@@ -1261,7 +1250,11 @@ fn handle_ipc(body: &str) {
             } else {
                 a.store.subs.push(sub);
             }
-            a.store.save_subs();
+            if !a.store.save_subs() {
+                a.store.subs = before; // the window shows what is on disk
+                save_failed();
+                return;
+            }
             send_js(&state_json());
             send_js(&json!({"type": "saved", "text": if existing.is_some() { "Saved" } else { "Subscription added" }}));
             scan::subs_changed();
@@ -1271,14 +1264,20 @@ fn handle_ipc(body: &str) {
         }
         "delete" => {
             let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+            let before = a.store.subs.clone();
             a.store.subs.retain(|s| s.id != id);
-            a.store.save_subs();
+            if !a.store.save_subs() {
+                a.store.subs = before;
+                save_failed();
+                return;
+            }
             send_js(&state_json());
             send_js(&json!({"type": "toast", "text": "Deleted"}));
             scan::subs_changed();
             after_change();
         }
         "import" => {
+            let before = a.store.subs.clone();
             let mut added = 0;
             for row in msg.get("items").and_then(|i| i.as_array()).map(|v| v.as_slice()).unwrap_or(&[]) {
                 let id = a.store.next_id();
@@ -1287,7 +1286,11 @@ fn handle_ipc(body: &str) {
                     added += 1;
                 }
             }
-            a.store.save_subs();
+            if !a.store.save_subs() {
+                a.store.subs = before;
+                save_failed();
+                return;
+            }
             send_js(&state_json());
             send_js(&json!({"type": "toast", "text": format!("Imported {} subscription{}", added, if added == 1 { "" } else { "s" })}));
             scan::subs_changed();
@@ -1298,7 +1301,10 @@ fn handle_ipc(body: &str) {
         "delete_payment" => {
             let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
             if let Some(d) = parse_iso(&str_of(&msg, "date")) {
-                a.store.delete_payment(id, d);
+                if !a.store.delete_payment(id, d) {
+                    save_failed();
+                    return;
+                }
             }
             send_js(&state_json());
         }
@@ -1306,13 +1312,17 @@ fn handle_ipc(body: &str) {
             let main = str_of(&msg, "main");
             let remind = msg.get("remind").and_then(|x| x.as_i64()).unwrap_or(3).clamp(0, 365) as i32;
             let budget = msg.get("budget").and_then(|x| x.as_f64()).filter(|b| b.is_finite() && *b >= 0.0).unwrap_or(0.0);
-            a.store.edit_settings(|s| {
-                if main.len() == 3 {
+            let saved = a.store.edit_settings(|s| {
+                if data::is_cur_code(&main) {
                     s.main_cur = main;
                 }
                 s.default_remind = remind;
                 s.budget = budget;
             });
+            if !saved {
+                save_failed();
+                return;
+            }
             maybe_fetch_rates(false);
             send_js(&state_json());
             after_change();
@@ -1320,18 +1330,27 @@ fn handle_ipc(body: &str) {
         "pay_methods" | "categories" => {
             let list: Vec<String> = msg.get("list").and_then(|x| x.as_array()).map_or(Vec::new(), |v| v.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
             let list = Some(clean_list(list));
-            if msg["cmd"] == "categories" {
-                a.store.edit_settings(|s| s.categories = list);
+            let saved = if msg["cmd"] == "categories" {
+                a.store.edit_settings(|s| s.categories = list)
             } else {
-                a.store.edit_settings(|s| s.pay_methods = list);
+                a.store.edit_settings(|s| s.pay_methods = list)
+            };
+            if !saved {
+                save_failed();
+                return;
             }
             send_js(&state_json());
         }
         "unused" => {
             let id = msg.get("id").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
             let on = msg.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
+            let before = a.store.subs.clone();
             if actions::set_unused(&mut a.store, id, on, today()) {
-                a.store.save_subs();
+                if !a.store.save_subs() {
+                    a.store.subs = before;
+                    save_failed();
+                    return;
+                }
                 after_change();
             }
             send_js(&state_json());
@@ -1402,6 +1421,8 @@ fn handle_ipc(body: &str) {
             if std::fs::write(data_dir().join(data::EXPORT_FILE), csv).is_ok() {
                 send_js(&json!({"type": "toast", "text": format!("Saved {}", data::EXPORT_FILE)}));
                 shell_open(&data_dir().to_string_lossy(), None);
+            } else {
+                send_js(&json!({"type": "toast", "text": format!("Couldn't save {}. Close it if it's open in another app, then try again.", data::EXPORT_FILE)}));
             }
         }
         "update_check" => maybe_check_updates(true),
@@ -1578,7 +1599,15 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             let notified = std::mem::take(&mut a.store.notified);
             let ack = std::mem::take(&mut a.store.ack);
             let price_alerted = std::mem::take(&mut a.store.price_alerted);
-            a.store = Store::load(data_dir());
+            let mut fresh = Store::load(data_dir());
+            // A file that exists but can't be read right now: keep what the tray has.
+            if fresh.settings_unreadable {
+                fresh.settings = std::mem::take(&mut a.store.settings);
+            }
+            if fresh.subs_unreadable {
+                fresh.subs = std::mem::take(&mut a.store.subs);
+            }
+            a.store = fresh;
             a.store.notified = notified;
             a.store.ack = ack;
             a.store.price_alerted = price_alerted;

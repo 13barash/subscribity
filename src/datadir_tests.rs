@@ -214,3 +214,19 @@ fn mail_key_survives_a_move() {
     assert_eq!((back.user.as_str(), back.host.as_str()), ("a@b.c", "imap.b.c"));
     let _ = fs::remove_dir_all(base);
 }
+
+#[test]
+fn has_data_ignores_another_apps_settings_ini() {
+    let base = temp_dir("hasdata");
+    assert!(!has_data(&base));
+    fs::write(base.join(SETTINGS_FILE), "[General]\nfoo=1\n").unwrap();
+    assert!(!has_data(&base)); // another app's settings.ini: not our data
+    fs::write(base.join(SETTINGS_FILE), "").unwrap();
+    assert!(has_data(&base)); // ours: written empty on first run
+    fs::write(base.join(SETTINGS_FILE), "\u{feff}[x]\r\nmain_currency=EUR\r\n").unwrap();
+    assert!(has_data(&base));
+    fs::write(base.join(SETTINGS_FILE), "[General]\nfoo=1\n").unwrap();
+    fs::write(base.join(SUBS_FILE), V010_SUBS).unwrap();
+    assert!(has_data(&base)); // subscriptions.tsv always counts
+    let _ = fs::remove_dir_all(base);
+}

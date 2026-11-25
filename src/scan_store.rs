@@ -12,7 +12,7 @@
 //! - `a  key icon site`: App Store lookup result for an App Store item (v0.3.0; empty = none found)
 //!
 //! Unknown line types and extra trailing fields are ignored, so newer versions can add them.
-use crate::data::{esc, iso, parse_iso, unesc, write_atomic, Sub, MAIL_KEY_FILE, SCAN_FILE};
+use crate::data::{esc, iso, parse_iso, read_text, unesc, write_atomic, Sub, MAIL_KEY_FILE, SCAN_FILE};
 use crate::detect::{self, Candidate, Charge};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -108,6 +108,8 @@ pub struct ScanFile {
     pub h: Vec<Charge>,
     pub c: Vec<Candidate>,
     pub apps: HashMap<String, (String, String)>, // App Store lookups: key → (icon, site)
+    /// scan.tsv exists but couldn't be read: save() refuses so it isn't overwritten.
+    pub unreadable: bool,
 }
 
 fn period_text(p: Option<(u32, u8)>) -> String {
@@ -191,7 +193,14 @@ fn parse_candidate(f: &[&str]) -> Option<Candidate> {
 impl ScanFile {
     pub fn load(dir: &Path) -> ScanFile {
         let mut s = ScanFile::default();
-        let Ok(t) = fs::read_to_string(dir.join(SCAN_FILE)) else { return s };
+        let t = match read_text(&dir.join(SCAN_FILE)) {
+            Ok(Some(t)) => t,
+            Ok(None) => return s,
+            Err(_) => {
+                s.unreadable = true;
+                return s;
+            }
+        };
         for line in t.lines() {
             let f: Vec<&str> = line.split('\t').collect();
             match f[0] {
@@ -213,6 +222,9 @@ impl ScanFile {
     }
 
     pub fn save(&self, dir: &Path) -> bool {
+        if self.unreadable {
+            return false;
+        }
         let mut t = String::new();
         if let Some(u) = &self.u {
             t.push_str(&format!("u\t{}\t{}\t{}\n", esc(&u.mailbox), u.uidvalidity, u.last_uid));

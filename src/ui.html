@@ -34,14 +34,12 @@ html { background: var(--bg); }
    Alpha .62 over dark acrylic (worst case white desktop) keeps muted text at 5.7:1. No in-page blur
    on large layers (DWM does it); modals keep theirs. */
 html.osglass { background: rgba(14,17,22,.62); --surface: rgba(255,255,255,.05); --glass-bg: rgba(14,17,22,.35); }
-html.osglass nav.glass, html.osglass .banner.glass, html.osglass .fbar.glass { backdrop-filter: none; -webkit-backdrop-filter: none; }
-/* wallglass: Transparency effects are off, so Rust pre-blurred the desktop wallpaper (320 px, capped
+html.osglass nav.glass, html.osglass .banner.glass, html.osglass .fbar.glass { backdrop-filter: none; -webkit-backdrop-filter: none; }/* wallglass: Transparency effects are off, so Rust pre-blurred the desktop wallpaper (320 px, capped
    to max channel 120) and serves it as --wall. Static layer, no CSS filter. Slate tint .72 + a 5% white
    card over the worst case (all-white wallpaper, capped to 120): bg ~ rgb(54,56,60) = muted #9AA4B2 4.6:1. */
 html.wallglass { --surface: rgba(255,255,255,.05); --glass-bg: rgba(14,17,22,.35); }
 html.wallglass body::before { background: linear-gradient(rgba(14,17,22,.72), rgba(14,17,22,.72)), var(--wall) center / cover no-repeat; }
 html.wallglass nav.glass, html.wallglass .banner.glass, html.wallglass .fbar.glass { backdrop-filter: none; -webkit-backdrop-filter: none; }
-html.wallglass .modal.glass { background: rgba(14,17,22,.78); }
 /* frameless: Rust removed the OS frame; the page draws the rounded window, its hairline and the title bar. */
 html.osglass { --win-bg: rgba(14,17,22,.62); }
 html.frameless { background: transparent; }
@@ -76,13 +74,17 @@ body { font: var(--t-body); color: var(--text); display: flex; overflow: hidden;
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background: radial-gradient(60% 55% at 12% -10%, rgba(127,166,201,.06), transparent), radial-gradient(50% 50% at 100% 110%, rgba(255,255,255,.03), transparent); }
 input, select, textarea, button { font: inherit; color: inherit; }
-input, textarea { user-select: text; -webkit-user-select: text; }
+input, textarea, .path, .err, .ferr, #sc-err, #sc-err2, .hist, #ask-b { user-select: text; -webkit-user-select: text; }
 svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 [hidden] { display: none !important; }
 ::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: var(--r-pill); border: 2px solid transparent; background-clip: padding-box; }
 :focus { outline: none; }
-:focus-visible { box-shadow: var(--ring); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.day:focus-visible, .row:focus-visible, .nu:focus-visible, .seg button:focus-visible, .mb:focus-visible { outline-offset: -2px; }
 .glass { background: var(--glass-bg); backdrop-filter: blur(var(--blur)) saturate(140%); -webkit-backdrop-filter: blur(var(--blur)) saturate(140%); }
+/* sticky filter bar and modals: solid surface, no blur (the scrim already blurs behind modals) */
+.fbar.glass { background: color-mix(in srgb, var(--surface-solid) 94%, transparent); backdrop-filter: none; -webkit-backdrop-filter: none; }
+.modal.glass { background: var(--surface-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .num { font-variant-numeric: tabular-nums; }
 .micro { font: var(--t-micro); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
@@ -147,9 +149,9 @@ h3 { font: var(--t-h3); }
 .btn.danger { color: var(--bad); }
 .btn.danger:hover, .btn.danger.ghost:hover { color: var(--bad); border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
 .btn.coffee { background: var(--coffee); color: var(--on-accent); border: 0; }
-.btn.small { min-height: 36px; padding: 0 var(--s3); font: var(--t-small); font-weight: 600; }
+.btn.small { min-height: 40px; padding: 0 var(--s3); font: var(--t-small); font-weight: 600; }
 .btn:disabled { opacity: .5; cursor: default; }
-.iconbtn { display: inline-grid; place-items: center; width: 36px; height: 36px; border: 0; background: transparent; border-radius: var(--r-sm); color: var(--muted); cursor: pointer; flex: none; transition: transform var(--d-fast) var(--ease-spring), background-color var(--d-fast), color var(--d-fast); }
+.iconbtn { display: inline-grid; place-items: center; width: 40px; height: 40px; border: 0; background: transparent; border-radius: var(--r-sm); color: var(--muted); cursor: pointer; flex: none; transition: transform var(--d-fast) var(--ease-spring), background-color var(--d-fast), color var(--d-fast); }
 .iconbtn:hover { background: var(--surface-2); color: var(--text); } .iconbtn:active { transform: scale(.94); }
 .iconbtn.bad:hover { color: var(--bad); }
 .field { display: flex; align-items: center; gap: var(--s2); background: var(--bg-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 0 var(--s3); min-height: 36px; transition: border-color var(--d-fast); }
@@ -162,7 +164,7 @@ h3 { font: var(--t-h3); }
 .field.grow input { width: 100%; }
 select option { background: var(--surface-solid); }
 .seg { display: inline-flex; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s1); gap: var(--s1); }
-.seg button { border: 0; background: none; min-height: 36px; padding: 0 var(--s3); border-radius: var(--r-xs); cursor: pointer; color: var(--muted); font: var(--t-btn); transition: background-color var(--d-fast), color var(--d-fast); }
+.seg button { border: 0; background: none; min-height: 40px; padding: 0 var(--s3); border-radius: var(--r-xs); cursor: pointer; color: var(--muted); font: var(--t-btn); transition: background-color var(--d-fast), color var(--d-fast); }
 .seg button:hover { color: var(--text); }
 .seg button.on { background: var(--accent-soft); color: var(--text); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
 .switch { position: relative; width: 44px; height: 24px; flex: none; display: inline-block; }
@@ -207,7 +209,7 @@ select option { background: var(--surface-solid); }
 /* filter bar */
 .fbar { position: sticky; top: 0; z-index: 5; margin: 0 calc(var(--s5) * -1) var(--s3); padding: var(--s3) var(--s5); border-bottom: 1px solid var(--line); display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; }
 .fchips { display: flex; gap: var(--s2); flex-wrap: wrap; }
-.fchip { min-height: 36px; padding: 0 var(--s3); border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-pill); cursor: pointer; font: var(--t-btn); color: var(--muted); transition: background-color var(--d-fast), color var(--d-fast), border-color var(--d-fast), transform var(--d-fast) var(--ease-spring); }
+.fchip { min-height: 40px; padding: 0 var(--s3); border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-pill); cursor: pointer; font: var(--t-btn); color: var(--muted); transition: background-color var(--d-fast), color var(--d-fast), border-color var(--d-fast), transform var(--d-fast) var(--ease-spring); }
 .fchip:hover { color: var(--text); border-color: var(--line-strong); }
 .fchip:active { transform: scale(.97); }
 .fchip[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
@@ -227,7 +229,7 @@ select option { background: var(--surface-solid); }
 .row.hl::after { animation: hl 1.6s var(--ease-out); }
 .name { font: var(--t-h3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta { font: var(--t-small); color: var(--muted); margin-top: var(--s1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.racts { display: flex; gap: var(--s1); opacity: 0; transform: translateX(4px); transition: opacity var(--d-fast), transform var(--d-fast) var(--ease-out); min-width: 72px; justify-content: flex-end; }
+.racts { display: flex; gap: var(--s1); opacity: 0; transform: translateX(4px); transition: opacity var(--d-fast), transform var(--d-fast) var(--ease-out); min-width: 84px; justify-content: flex-end; }
 .row:hover .racts, .row:focus-within .racts { opacity: 1; transform: none; }
 .rdue { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: var(--s1); min-width: 112px; }
 .rdue .d { font: var(--t-small); color: var(--muted); }
@@ -291,6 +293,7 @@ select option { background: var(--surface-solid); }
 .evs .tile { width: var(--ts); height: var(--ts); line-height: calc(var(--ts) - 4px); font-size: calc(var(--ts) * .45); border-radius: calc(var(--ts) * .24); }
 .evs .tile.more { font-size: calc(var(--ts) * .36); }
 @container (max-height: 78px) { .evs.one .evn { display: none; } }
+@container (max-width: 72px) { .day .wd { display: none; } }
 .chip-total .ccur { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
 .chip-total .cplus, .chip-total .ceq { color: var(--faint); margin: 0 .4em; font-weight: 400; }
 .chip-total .ctot { font-variant-numeric: tabular-nums; }
@@ -311,7 +314,9 @@ select option { background: var(--surface-solid); }
 .bar .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: var(--s2); }
 .bar .amt { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
 .donut-wrap { display: flex; gap: var(--s5); align-items: center; flex-wrap: wrap; }
-.legend div { display: flex; align-items: center; gap: var(--s2); font-size: 13px; margin-bottom: var(--s1); }
+.legend { min-width: 0; max-width: 100%; }
+.legend div { display: flex; align-items: center; gap: var(--s2); font-size: 13px; margin-bottom: var(--s1); min-width: 0; white-space: nowrap; }
+.legend .ln { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .up { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); font-size: 13px; position: relative; }
 .up:last-child { border: 0; }
@@ -371,7 +376,7 @@ details.more > .inner { margin-top: var(--s3); }
 html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
 .scrim.open { display: flex; animation: fin var(--d-fast) var(--ease-out) backwards; }
 .scrim.open .modal { animation: min var(--d-mid) var(--ease-out) backwards; }
-.scrim.closing { animation: fout var(--d-fast) var(--ease-in) forwards; }
+.scrim.closing { animation: fout var(--d-fast) var(--ease-in) forwards; pointer-events: none; }
 .scrim.closing .modal { animation: mout var(--d-fast) var(--ease-in) forwards; }
 #ask { z-index: 30; } #sheet { z-index: 20; } #busy { z-index: 40; }
 .modal.busy { display: flex; align-items: center; gap: var(--s4); }
@@ -433,8 +438,9 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
 .rrow:last-child { border: 0; }
 .rrow .grow { flex: 1; min-width: 140px; }
 
-.toast { position: fixed; bottom: var(--s5); left: 50%; transform: translate(-50%, 16px); background: var(--glass-bg); backdrop-filter: blur(var(--blur)) saturate(140%); -webkit-backdrop-filter: blur(var(--blur)) saturate(140%); border: 1px solid var(--line-strong); color: var(--text); padding: var(--s3) var(--s5); border-radius: var(--r-md); font: var(--t-btn); opacity: 0; transition: opacity var(--d-mid) var(--ease-out), transform var(--d-mid) var(--ease-out); pointer-events: none; z-index: 40; box-shadow: var(--sh-2); max-width: calc(100vw - 32px); }
-.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast { position: fixed; bottom: var(--s5); left: 50%; transform: translate(-50%, 16px); background: var(--surface-solid); border: 1px solid var(--line-strong); color: var(--text); padding: var(--s3) var(--s5); border-radius: var(--r-md); font: var(--t-btn); opacity: 0; transition: opacity var(--d-mid) var(--ease-out), transform var(--d-mid) var(--ease-out); pointer-events: none; z-index: 40; box-shadow: var(--sh-2); max-width: calc(100vw - 32px); }
+.toast.show { opacity: 1; transform: translate(-50%, 0); background: var(--glass-bg); backdrop-filter: blur(var(--blur)) saturate(140%); -webkit-backdrop-filter: blur(var(--blur)) saturate(140%); }
+html.noblur .toast.show { backdrop-filter: none; -webkit-backdrop-filter: none; }
 
 /* scanner */
 .stepper { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s5); flex-wrap: wrap; }
@@ -471,7 +477,9 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
   .cal-grid { grid-auto-rows: minmax(76px, 1fr); }
   .day { padding: var(--s2); } .day.now::after { inset: 2px; }
 }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .row.hl::after { opacity: 1; }
+  .meter.ind i { width: 50%; transform: none; } }
 </style>
 </head>
 <body>
@@ -531,7 +539,7 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
         <div class="hero-s" id="hero-s"></div>
         <div id="hero-b"></div>
       </div>
-      <button class="btn primary lg" onclick="openEdit()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add subscription</button>
+      <button class="btn primary lg" id="hero-add" onclick="openEdit()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add subscription</button>
     </div>
     <div id="nu-wrap" hidden><div class="micro sect" style="margin-top:0">Next up</div><div class="nextup" id="nextup"></div></div>
     <div class="fbar glass" role="toolbar" aria-label="Filter subscriptions">
@@ -677,9 +685,9 @@ html.noblur .scrim { backdrop-filter: none; -webkit-backdrop-filter: none; }
           <button class="btn" id="s-dd-change" onclick="send({cmd:'data_dir_pick'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-edit"/></svg>Change…</button>
           <button class="btn" id="s-dd-default" hidden onclick="send({cmd:'data_dir_default'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-undo"/></svg>Use default folder</button></div></div>
       <div class="set"><div><div class="t">Find subscriptions in my email</div><div class="sub" id="s-scan-sub"></div></div>
-        <button class="btn" onclick="go('scan')"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-open"/></svg>Open</button></div>
+        <button class="btn" onclick="go('scan')"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-open"/></svg>Open scanner</button></div>
       <div class="set"><div><div class="t">Exchange rates</div><div class="sub" id="s-rates"></div></div>
-        <button class="btn" onclick="send({cmd:'rates'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Update now</button></div>
+        <button class="btn" onclick="send({cmd:'rates'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>Update rates</button></div>
       <div class="set"><div><div class="t">Import and export</div><div class="sub">Import a CSV or JSON file, for example a Subscribity or Wallos export.</div></div>
         <div class="r"><button class="btn" onclick="$('file').click()"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-upload"/></svg>Choose file…</button><button class="btn" onclick="send({cmd:'export'})"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-download"/></svg>Export CSV</button></div></div>
       <div class="set"><div><div class="t">Backups</div><div class="sub" id="s-bk-sub">A copy of your data is saved every week and kept for 30 days.</div></div>
@@ -820,8 +828,10 @@ function moneyFit(v, cur) {
 }
 const cycle = s => s.every === 1 ? ["Daily","Weekly","Monthly","Yearly"][s.unit] : `Every ${s.every} ${UNIT[s.unit]}`;
 function fmtDate(iso, opts) {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, opts || { day: "numeric", month: "short", year: "numeric" });
+  const [y, m, d] = String(iso ?? "").split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  if (!y || !m || !d || isNaN(dt)) return "–";
+  return dt.toLocaleDateString(undefined, opts || { day: "numeric", month: "short", year: "numeric" });
 }
 const inDays = l => l === 0 ? "today" : l === 1 ? "tomorrow" : `in ${l} days`;
 const UF = [30.436875, 4.348125, 1, 1 / 12];
@@ -950,15 +960,19 @@ function setGlass(msg) {
   if (fl && !tbSent) { tbSent = true; send({ cmd: "titlebar", h: $("titlebar").offsetHeight || 36, right: 108 }); }
   if (wall) el.style.setProperty("--wall", 'url("' + wall + '")'); else el.style.removeProperty("--wall");
 }
+// saving: a save from the edit dialog is in flight (cleared on saved/error/toast/state). ownSave: that save should close the dialog on 'saved'
+// (kept separate because 'state' may arrive before 'saved').
+let saving = false, ownSave = false;
+function unbusy() { document.querySelectorAll("#sc-list button:disabled, #sc-revbar button:disabled").forEach(b => { b.disabled = false; }); }
 window.__recv = msg => {
   const t = msg.type;
   if (t === "win") setMax(msg.maximized);
-  else if (t === "state") { S = msg; setGlass(msg); setMax(msg.maximized); renderAll(); const q = pendingOpen; pendingOpen = []; q.forEach(handleOpen); }
+  else if (t === "state") { if (!ownSave) saving = false; /* our own save stays in flight until saved/toast/error */ S = msg; setGlass(msg); setMax(msg.maximized); renderAll(); const q = pendingOpen; pendingOpen = []; q.forEach(handleOpen); }
   else if (t === "icons") { if (msg.map && typeof msg.map === "object") Object.assign(ICONS, msg.map); if (S && ICON_MODE === "map") renderAll(); }
   else if (t === "calendar") renderCalendar(msg);
-  else if (t === "toast") toast(msg.text);
-  else if (t === "error") { if (isOpen($("scrim"))) { if (/manage/i.test(msg.text || "")) { $("e-details").open = true; setErr("e-manage", msg.text); $("e-manage").focus(); } else $("e-err").textContent = msg.text; } else toast(msg.text); }
-  else if (t === "saved") { closeEdit(); toast(msg.text); }
+  else if (t === "toast") { saving = false; ownSave = false; unbusy(); toast(msg.text); }
+  else if (t === "error") { saving = false; ownSave = false; unbusy(); if (isOpen($("scrim"))) { if (/manage/i.test(msg.text || "")) { $("e-details").open = true; setErr("e-manage", msg.text); $("e-manage").focus(); } else $("e-err").textContent = msg.text; } else toast(msg.text); }
+  else if (t === "saved") { saving = false; if (ownSave) closeEdit(); toast(msg.text); }
   else if (t === "open") { if (S) handleOpen(msg); else pendingOpen.push(msg); }
   else if (t === "data_dir_picked") dataDirPicked(msg);
   else scanRecv(msg);
@@ -971,8 +985,10 @@ function handleOpen(msg) {
 
 function renderAll() {
   $("foot").textContent = "v" + S.version; $("s-ver").textContent = "v" + S.version;
-  fillFilters(); renderSubs(); renderStats(); renderHistory(); renderSettings(); renderScan();
-  if (isOpen($("scrim")) && editing) refreshEditQuick();
+  for (const f of [fillFilters, renderSubs, renderStats, renderHistory, renderSettings, renderScan]) {
+    try { f(); } catch (e) { console.error(f.name, e); }
+  }
+  try { if (isOpen($("scrim")) && editing) refreshEditQuick(); } catch (e) { console.error("refreshEditQuick", e); }
   if (cal) send({ cmd: "calendar", y: cal.y, m: cal.m });
 }
 
@@ -1021,7 +1037,7 @@ function renderNextUp(active) {
   const list = active.slice().sort((a, b) => a.left - b.left).slice(0, 3);
   $("nu-wrap").hidden = !list.length;
   const html = list.map(s => `<div class="nu" tabindex="0" role="button" data-id="${s.id}" style="--tint:${tintOf(s)}" aria-label="Edit ${esc(s.name)}">
-    <div class="nu-top">${avatar(s, "md")}<div style="min-width:0;flex:1"><div class="name">${esc(s.name)}</div><div class="meta">${esc(fmtDate(s.next, { day: "numeric", month: "short" }))}</div></div></div>
+    <div class="nu-top">${avatar(s, "md")}<div style="min-width:0;flex:1"><div class="name">${esc(s.name)}</div><div class="meta" title="${esc(fmtDate(s.next))}">${esc(fmtDate(s.next, { day: "numeric", month: "short" }))}</div></div></div>
     <div class="nu-bot">${dueLabel(s)}<span class="p">${esc(money(s.price, s.cur))}</span></div>
     ${isReminder(s) ? `<button class="btn ghost small" data-do="unused" data-id="${s.id}">Don't use it anymore</button>` : s.unused ? unusedPill(s) : ""}</div>`).join("");
   if (html !== renderNextUp.h) { renderNextUp.h = html; $("nextup").innerHTML = html; }
@@ -1032,6 +1048,7 @@ function renderSubs() {
   const nUnused = S.subs.filter(s => s.unused).length;
   $("subs-sub").innerHTML = `${active.length} active${SEP}${S.subs.length - active.length} paused` + (trials.length ? `${SEP}${trials.length} in trial` : "");
   setHero(m, active, missing);
+  $("hero-add").hidden = !S.subs.length; // the empty state has its own primary button
   renderNextUp(active);
   $("f-unused").textContent = `Unused (${nUnused})`;
   document.querySelectorAll("#f-chips .fchip").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.st === FS.state)));
@@ -1060,10 +1077,11 @@ function renderSubs() {
     const foreign = s.cur !== S.settings.main && s.priceMain != null ? `${SEP}≈ ${esc(mainMoney(s.priceMain))}` : "";
     const meta = [cycle(s), s.category, s.payment].filter(Boolean).map(esc).join(SEP) + foreign;
     const yr = isYearly(s) ? "" : `≈ ${esc(money(yearlyOwn(s), s.cur))} / yr`;
+    const metaTip = esc([cycle(s), s.category, s.payment].filter(Boolean).join(" | "));
     const isHl = hl && s.name.toLowerCase() === hl && !hlDone; if (isHl) hlDone = true;
     return `<div class="row ${s.active ? "" : "paused"} ${stag && n < 10 ? "in" : ""} ${isHl ? "hl" : ""}" tabindex="0" role="button" data-id="${s.id}" style="--tint:${tintOf(s)};--i:${n}" aria-label="Edit ${esc(s.name)}">
       ${avatar(s)}
-      <div style="min-width:0"><div class="name">${esc(s.name)}</div><div class="meta">${meta}</div>${priceChange(s)}</div>
+      <div style="min-width:0"><div class="name">${esc(s.name)}</div><div class="meta" title="${metaTip}">${meta}</div>${priceChange(s)}</div>
       <div class="racts">${s.manage ? `<button class="iconbtn" data-do="manage" data-id="${s.id}" title="Manage / cancel" aria-label="Manage ${esc(s.name)}"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4 10 14M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>` : ""}<button class="iconbtn" data-do="edit" data-id="${s.id}" title="Edit" aria-label="Edit ${esc(s.name)}"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/></svg></button></div>
       <div class="rdue"><span class="d">${esc(fmtDate(s.next))}</span>${dueLabel(s)}${unusedPill(s)}</div>
       <div class="price"><div class="p">${esc(money(s.price, s.cur))}</div><div class="c">${yr}</div></div>
@@ -1077,9 +1095,9 @@ $("list").addEventListener("click", e => {
   if (e.target.closest("[data-do]")) return;
   const r = e.target.closest(".row"); if (r) openEdit(Number(r.dataset.id));
 });
-$("list").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.classList.contains("row")) { e.preventDefault(); e.stopPropagation(); openEdit(Number(e.target.dataset.id)); } });
+$("list").addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("row")) { e.preventDefault(); e.stopPropagation(); openEdit(Number(e.target.dataset.id)); } });
 $("nextup").addEventListener("click", e => { if (e.target.closest("[data-do]")) return; const r = e.target.closest(".nu"); if (r) openEdit(Number(r.dataset.id)); });
-$("nextup").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.classList.contains("nu")) { e.preventDefault(); e.stopPropagation(); openEdit(Number(e.target.dataset.id)); } });
+$("nextup").addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("nu")) { e.preventDefault(); e.stopPropagation(); openEdit(Number(e.target.dataset.id)); } });
 $("f-chips").addEventListener("click", e => { const b = e.target.closest(".fchip"); if (b) { FS.state = b.dataset.st; renderSubs(); } });
 $("f-btn").addEventListener("click", e => { e.stopPropagation(); const o = $("f-pop").hidden; $("f-pop").hidden = !o; $("f-btn").setAttribute("aria-expanded", String(o)); });
 $("f-pop").addEventListener("click", e => e.stopPropagation());
@@ -1098,15 +1116,25 @@ document.addEventListener("click", e => {
 // ---------- unused: savings sheet, remind sheet ----------
 function markUnused(id) {
   if (isOpen($("scrim"))) closeEdit();
+  const fromRemind = isOpen($("sheet")) && !!$("sheet-body").querySelector(".rrow");
   send({ cmd: "unused", id, on: true });
   showSavings(id);
+  backToRemind = fromRemind;
 }
 function unmarkUnused(id) { send({ cmd: "unused", id, on: false }); }
-function openSheet(html, focusSel) {
-  $("sheet-body").innerHTML = html; openScrim($("sheet"));
+let sheetFrom = null, backToRemind = false;
+function openSheet(html, focusSel, label) {
+  $("sheet-body").innerHTML = html;
+  $("sheet-body").setAttribute("aria-label", label || "Details");
+  if (!isOpen($("sheet"))) sheetFrom = document.activeElement;
+  openScrim($("sheet"));
   setTimeout(() => ($("sheet-body").querySelector(focusSel || "[data-focus]") || $("sheet-body").querySelector("button"))?.focus(), 30);
 }
-function closeSheet() { closeScrim($("sheet")); }
+function closeSheet() {
+  const was = isOpen($("sheet")), from = sheetFrom; sheetFrom = null;
+  closeScrim($("sheet"));
+  if (was && from && from.isConnected && from !== document.body) from.focus();
+}
 function showSavings(id) {
   const s = S && S.subs.find(x => x.id === id); if (!s) return;
   const y = yearlyMainOf(s), val = y != null ? y : yearlyOwn(s), fmt = y != null ? mainMoney : v => money(v, s.cur);
@@ -1119,31 +1147,37 @@ function showSavings(id) {
       <button class="btn" data-sh="undo" data-id="${s.id}">Undo</button>
       <button class="btn ghost" data-sh="done" ${s.manage ? "" : "data-focus"}>Done</button>
     </div>
-    <p class="sheet-p" style="margin-top:var(--s4)">Subscribity can't cancel for you. Cancel on the service's site, then pause or delete it here.</p>`);
+    <p class="sheet-p" style="margin-top:var(--s4)">Subscribity can't cancel for you. Cancel on the service's site, then pause or delete it here.</p>`, null, "Savings from marking a subscription unused");
   countTo($("sv-amt"), val, fmt);
 }
 let remindSkip = new Set();
 function showRemind() {
   if (!S) return;
+  backToRemind = false;
   const list = S.subs.filter(s => isReminder(s) && !remindSkip.has(s.id));
   const rows = list.map(s => `<div class="rrow">${avatar(s, "sm")}<div class="grow"><div class="name">${esc(s.name)}</div><div class="meta">${esc(money(s.price, s.cur))}${SEP}${esc(dueLabel(s).replace(/<[^>]*>/g, ""))}</div></div>
     <button class="btn small" data-do="unused" data-id="${s.id}">Don't use it anymore</button><button class="btn ghost small" data-sh="keep" data-id="${s.id}">Keep</button></div>`).join("");
   openSheet(`<h2 style="font:var(--t-h2);margin-bottom:var(--s2)">Still using these?</h2><div class="sub" style="font:var(--t-body);margin-bottom:var(--s3)">These renew soon. Mark the ones you don't use to see what you'd save.</div>
     ${rows || `<div class="sub" style="padding:var(--s4) 0">Nothing to review right now.</div>`}
-    <div class="actions"><div class="spacer"></div><button class="btn primary" data-sh="done" data-focus>Done</button></div>`);
+    <div class="actions"><div class="spacer"></div><button class="btn primary" data-sh="done" data-focus>Done</button></div>`, null, "Subscriptions to review");
 }
 $("sheet-body").addEventListener("click", e => {
   const b = e.target.closest("[data-sh]"); if (!b) return;
   const id = Number(b.dataset.id), a = b.dataset.sh;
-  if (a === "done") closeSheet();
-  else if (a === "undo") { unmarkUnused(id); closeSheet(); toast("Back to normal"); }
+  if (a === "done") {
+    const back = backToRemind; backToRemind = false;
+    if (back && S && S.subs.some(s => isReminder(s) && !remindSkip.has(s.id))) showRemind(); else closeSheet();
+  }
+  else if (a === "undo") { backToRemind = false; unmarkUnused(id); closeSheet(); toast("Back to normal"); }
   else if (a === "keep") { remindSkip.add(id); showRemind(); }
 });
 
 // ---------- add / edit ----------
 function fillCurrencies(el, value) {
   const list = [...S.currencies]; if (value && !list.includes(value)) list.push(value);
-  el.innerHTML = list.map(c => `<option>${c}</option>`).join(""); el.value = value;
+  const key = list.join("|");
+  if (el._cur !== key) { el._cur = key; el.innerHTML = list.map(c => `<option>${esc(c)}</option>`).join(""); }
+  if (el.value !== value) el.value = value;
 }
 let editBase = { start: "", first: "", icon: "", url: "", isNew: true, tint: "" };
 function trialLabel() { $("e-date-l").textContent = $("e-trial").checked ? "Trial ends / first charge" : editing ? "Next payment" : "First payment"; }
@@ -1201,10 +1235,16 @@ function openEdit(id, preset) {
   const pick = !s && !preset;
   if (pick) { pickQ = ""; pickCat = ""; $("p-q").value = ""; renderPick(); }
   showStep(pick ? 1 : 2);
+  if (!isOpen($("scrim"))) editFrom = document.activeElement;
   openScrim($("scrim"));
   setTimeout(() => (pick ? $("p-q") : $("e-name")).focus(), 30);
 }
-function closeEdit() { closeScrim($("scrim")); }
+let editFrom = null;
+function closeEdit() {
+  const was = isOpen($("scrim")), from = editFrom; editFrom = null; saving = false; ownSave = false;
+  closeScrim($("scrim"));
+  if (was && from && from.isConnected && from !== document.body) from.focus();
+}
 
 // ---- template picker (step 1) ----
 const tplCats = () => [...new Set(tpl().map(t => t[2]))];
@@ -1266,6 +1306,7 @@ $("e-unused-btn").addEventListener("click", () => {
   if ($("e-unused-btn").dataset.on === "1") markUnused(editing); else { unmarkUnused(editing); toast("Back to normal"); }
 });
 function saveSub() {
+  if (saving || !isOpen($("scrim"))) return; // in flight, or the dialog is already closing
   const price = parsePrice($("e-price").value);
   ["e-name", "e-price", "e-date", "e-manage"].forEach(i => setErr(i, ""));
   if (!$("e-name").value.trim()) { setErr("e-name", "Please enter a name."); return $("e-name").focus(); }
@@ -1273,11 +1314,12 @@ function saveSub() {
   if (!$("e-date").value) { setErr("e-date", "Please pick a date."); return $("e-date").focus(); }
   if (!editing) { pendingHl = $("e-name").value.trim().toLowerCase(); setTimeout(() => { pendingHl = ""; }, 6000); }
   // New category / payment method typed here is appended to the lists by Rust on save (no extra message from the UI).
+  saving = true; ownSave = true;
   send({ cmd: "save", sub: {
     id: editing, name: $("e-name").value.trim(), price, cur: $("e-cur").value,
-    every: Math.max(1, parseInt($("e-every").value) || 1), unit: parseInt($("e-unit").value),
+    every: Math.min(999, Math.max(1, parseInt($("e-every").value) || 1)), unit: parseInt($("e-unit").value),
     start: $("e-date").value, category: $("e-cat").value.trim(), payment: $("e-pay").value.trim(),
-    remind: Math.max(0, parseInt($("e-remind").value) || 0), url: $("e-url").value.trim(),
+    remind: Math.min(365, Math.max(0, parseInt($("e-remind").value) || 0)), url: $("e-url").value.trim(),
     notes: $("e-notes").value, active: $("e-active").checked, trial: $("e-trial").checked,
     manage: $("e-manage").value.trim(),
     // Icon follows the Website field; first payment is kept, except a new subscription whose preset date was changed.
@@ -1340,14 +1382,14 @@ function daySheet(d) {
   openSheet(`<h2 style="font:var(--t-h2)">${esc(dt.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" }))}</h2>
     <div class="sub" style="font:var(--t-body);margin:var(--s1) 0 var(--s3)">${list.length} payment${list.length === 1 ? "" : "s"}${SEP}${esc(mainMoney(total))}</div>
     ${list.map(e => `<button class="it" data-do="edit" data-id="${Number(e.id)}">${evTile(e)}<span class="t">${esc(e.name)}${e.trial ? " (trial ends)" : ""}</span><span class="m">${esc(money(e.price, e.cur))}</span></button>`).join("")}
-    <div class="actions"><div class="spacer"></div><button class="btn" data-sh="done" data-focus>Close</button></div>`);
+    <div class="actions"><div class="spacer"></div><button class="btn" data-sh="done" data-focus>Close</button></div>`, null, "Payments on " + dt.toLocaleDateString(undefined, { day: "numeric", month: "long" }));
 }
 $("cal").addEventListener("click", e => {
   const more = e.target.closest("[data-more]"); if (more) return calMore(Number(more.dataset.more), e, more);
   const t = e.target.closest(".tile[data-id], .evn[data-id]"); if (t) { openEdit(Number(t.dataset.id)); return; }
   const d = e.target.closest(".day.has"); if (d) daySheet(Number(d.dataset.d));
 });
-$("cal").addEventListener("keydown", e => { if (e.key === "Enter") { const d = e.target.closest(".day.has"); if (d) daySheet(Number(d.dataset.d)); } });
+$("cal").addEventListener("keydown", e => { if (e.key === "Enter" || (e.key === " " && e.target.classList.contains("day"))) { const d = e.target.closest(".day.has"); if (d) { e.preventDefault(); daySheet(Number(d.dataset.d)); } } });
 function moveMonth(d) {
   const [ty, tm] = S.today.split("-").map(Number);
   if (!cal || d === 0) { calDir = cal && d === 0 ? ((ty * 12 + tm) > (cal.y * 12 + cal.m) ? 1 : (ty * 12 + tm) < (cal.y * 12 + cal.m) ? -1 : 0) : 0; cal = { y: ty, m: tm }; }
@@ -1403,7 +1445,7 @@ function groupBy(key) {
 function bars(entries) {
   if (!entries.length) return `<div class="sub">No data yet.</div>`;
   const max = entries[0][1] || 1;
-  return entries.map(([k, v]) => `<div class="bar"><div class="lbl">${esc(k)}</div><div class="track"><div class="fill" style="transform:scaleX(${Math.max(.03, v / max)})"></div></div><div class="amt">${mainMoney(v)}</div></div>`).join("");
+  return entries.map(([k, v]) => `<div class="bar"><div class="lbl" title="${esc(k)}">${esc(k)}</div><div class="track"><div class="fill" style="transform:scaleX(${Math.max(.03, v / max)})"></div></div><div class="amt">${mainMoney(v)}</div></div>`).join("");
 }
 // Spending by month from the payments log: the n months ending now. Payments without a rate are left out and the month gets "*".
 function spendByMonth(n) {
@@ -1443,7 +1485,7 @@ function renderStats() {
     flagged.length ? ["Could save", mainMoney(save), `${flagged.length} unused subscription${flagged.length === 1 ? "" : "s"}${SEP}per year`, "", "", "warn"]
       : ["Top category", topCat ? esc(topCat[0]) : "–", topCat ? mainMoney(topCat[1]) + "/month" : "", "", "", ""],
   ];
-  $("stat-cards").innerHTML = kpis.map(([k, v, h, x, bad, cls]) => `<div class="card ${cls}"><div class="micro">${k}</div><div class="v">${v}</div><div class="h ${bad}">${h}</div>${x}</div>`).join("");
+  $("stat-cards").innerHTML = kpis.map(([k, v, h, x, bad, cls]) => `<div class="card ${cls}"><div class="micro">${k}</div><div class="v" title="${String(v).replace(/"/g, "&quot;")}">${v}</div><div class="h ${bad}">${h}</div>${x}</div>`).join("");
   monthBars($("stat-chart"), 12);
   const top = S.subs.filter(s => s.active).map(s => [s, yearlyMainOf(s)]).filter(x => x[1] != null).sort((a, b2) => b2[1] - a[1]).slice(0, 5);
   const tmax = top.length ? top[0][1] || 1 : 1;
@@ -1470,7 +1512,7 @@ function renderStats() {
       a0 = a1;
     }
     $("donut").innerHTML = `<svg viewBox="0 0 120 120" style="width:130px;height:130px;stroke:none" role="img" aria-label="Share of monthly cost">${paths}</svg>
-      <div class="legend">${segs.map(([n, v, col]) => `<div><i style="background:${col}"></i>${esc(n)}${SEP}${Math.round(v / m * 100)}%</div>`).join("")}</div>`;
+      <div class="legend">${segs.map(([n, v, col]) => `<div><i style="background:${col}"></i><span class="ln" title="${esc(n)}">${esc(n)}</span>${SEP}${Math.round(v / m * 100)}%</div>`).join("")}</div>`;
   }
   $("upcoming").innerHTML = next30.length ? next30.slice(0, 8).map(s =>
     `<div class="up"><div class="l">${avatar(s, "sm")}<span>${esc(s.name)} <span class="sub">${SEP}${fmtDate(s.next, { day: "numeric", month: "short" })}</span></span></div><b class="num">${esc(money(s.price, s.cur))}</b></div>`).join("")
@@ -1595,8 +1637,15 @@ async function delFromList(k, i) {
   send({ cmd: c.cmd, list: list.filter((_, j) => j !== i) });
 }
 function saveSettings() {
-  const b = parsePrice($("s-budget").value);
-  send({ cmd: "settings", main: $("s-cur").value, remind: Math.max(0, parseInt($("s-remind").value) || 0), budget: b > 0 ? b : 0 });
+  const raw = $("s-budget").value.trim(), b = raw === "" ? 0 : parsePrice(raw);
+  if (raw !== "" && !(b > 0)) {
+    toast("Enter the budget as a number, for example 150");
+    $("s-budget").value = S.settings.budget ? String(S.settings.budget) : "";
+    return;
+  }
+  const remind = Math.min(365, Math.max(0, parseInt($("s-remind").value) || 0));
+  $("s-remind").value = remind;
+  send({ cmd: "settings", main: $("s-cur").value, remind, budget: b });
 }
 function setBackupsOpen(v) { $("s-backups").hidden = !v; $("s-bk-toggle").setAttribute("aria-expanded", v ? "true" : "false"); }
 $("s-bk-toggle").addEventListener("click", () => setBackupsOpen($("s-backups").hidden));
@@ -1632,6 +1681,20 @@ function parseCSV(text) {
   return rows.filter(r => r.some(x => x.trim())).map(r => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])));
 }
 const SYMBOLS = { "$": "USD", "€": "EUR", "£": "GBP", "₪": "ILS", "¥": "JPY", "₹": "INR", "₽": "RUB", "₴": "UAH", "₩": "KRW", "₺": "TRY", "฿": "THB", "zł": "PLN", "R$": "BRL" };
+// ISO strings stay as is; d/m/yyyy and d.m.yyyy are day-first; anything else goes through Date and is read in local time (no UTC shift).
+function importDate(date) {
+  date = String(date ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(date)) return date.slice(0, 10);
+  const p = n => String(n).padStart(2, "0");
+  const dm = date.match(/^(\d{1,2})[/.](\d{1,2})[/.](\d{4})$/);
+  if (dm) {
+    const d = new Date(+dm[3], +dm[2] - 1, +dm[1]);
+    if (d.getFullYear() === +dm[3] && d.getMonth() === +dm[2] - 1 && d.getDate() === +dm[1]) return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    return S.today;
+  }
+  const d = new Date(date);
+  return isNaN(d) ? S.today : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 function toSub(o) {
   if (!o || typeof o !== "object") o = {};
   const n = {}; for (const [k, v] of Object.entries(o)) n[k.toLowerCase().replace(/[^a-z]/g, "")] = v;
@@ -1646,7 +1709,7 @@ function toSub(o) {
   if (/day|daily/.test(cyc)) unit = 0; else if (/week/.test(cyc)) unit = 1; else if (/year|annual/.test(cyc)) unit = 3;
   else if (/^\d$/.test(cyc)) { unit = { 1: 0, 2: 1, 3: 2, 4: 3 }[cyc] ?? 2; every = parseInt(pick("frequency")) || 1; }
   let date = pick("nextpayment", "nextpaymentdate", "nextrenewal", "renewal", "nextdate", "date", "startdate");
-  const iso = /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 10) : (() => { const d = new Date(date); return isNaN(d) ? S.today : d.toISOString().slice(0, 10); })();
+  const iso = importDate(date);
   const act = pick("active", "state", "enabled", "status").toLowerCase();
   return {
     name, price: typeof (n.price ?? n.amount ?? n.cost) === "number" ? (n.price ?? n.amount ?? n.cost) : parsePrice(rawPrice), cur: cur || S.settings.main, every, unit, start: iso,
@@ -1761,7 +1824,7 @@ function renderScan() {
     $("sc-meter").classList.toggle("ind", !reading);
     $("sc-bar").style.width = reading ? "100%" : ""; $("sc-bar").style.transform = reading ? `scaleX(${Math.min(1, p.done / p.total)})` : "";
   } else { $("sc-meter").classList.remove("ind"); }
-  renderReview(conn);
+  if (!scanning) renderReview(conn); // the review list is hidden during a scan; skip rebuilding it on every progress message
 }
 
 function candCard(c) {
@@ -1810,7 +1873,7 @@ $("sc-list").addEventListener("click", e => {
   const b = e.target.closest("button[data-act]"); if (!b) return;
   const key = b.closest(".cand")?.dataset.key, c = SC.cands.find(x => x.key === key); if (!c) return;
   const a = b.dataset.act;
-  if (a === "add") { if (isoOk(c.start || c.anchor || c.first || c.next)) send({ cmd: "save", sub: candSub(c) }); else openEdit(0, candSub(c)); }
+  if (a === "add") { if (isoOk(c.start || c.anchor || c.first || c.next)) { b.disabled = true; send({ cmd: "save", sub: candSub(c) }); } else openEdit(0, candSub(c)); }
   else if (a === "edit") openEdit(0, candSub(c));
   else if (a === "update") openEdit(c.subId, { price: c.price, cur: c.cur });
   else if (a === "skip") send({ cmd: "scan_skip", key: c.key });
@@ -1821,9 +1884,10 @@ $("sc-revbar").addEventListener("click", async e => {
   if (b.dataset.top === "skipped") { SC.showSkipped = !SC.showSkipped; renderScan(); }
   else if (b.dataset.top === "reset") send({ cmd: "scan_reset_skipped" });
   else if (b.dataset.top === "all") {
+    if (b.disabled) return;
     const hi = SC.cands.filter(c => c.level === "high" && !c.tracked && !c.skipped && isoOk(c.next)); if (!hi.length) return;
     const names = hi.slice(0, 5).map(c => c.name).join(", ") + (hi.length > 5 ? "…" : "");
-    if (await ask(`Add ${hi.length} subscription${hi.length === 1 ? "" : "s"}?`, names, "Add all")) send({ cmd: "import", items: hi.map(candSub) });
+    if (await ask(`Add ${hi.length} subscription${hi.length === 1 ? "" : "s"}?`, names, "Add all")) { b.disabled = true; send({ cmd: "import", items: hi.map(candSub) }); }
   }
 });
 document.querySelectorAll("#sc-prov button").forEach(b => b.onclick = () => { SC.prov = b.dataset.p; SC.err = ""; renderScan(); });
@@ -1885,15 +1949,27 @@ function canScroll(el, dy) {
   if (o !== "auto" && o !== "scroll") return false;
   return dy > 0 ? el.scrollTop < el.scrollHeight - el.clientHeight - 1 : el.scrollTop > 0;
 }
+const GLIDING = new Set();
+function stopGlide(el, s) { cancelAnimationFrame(s.raf); s.raf = 0; s.target = s.last = el.scrollTop; GLIDING.delete(el); }
 function smoothStep(el, s, now) {
-  const dt = Math.min(64, now - s.t || 16.7); s.t = now;
-  const diff = s.target - s.last;
-  if (Math.abs(diff) < 0.5) { el.scrollTop = s.target; s.last = el.scrollTop; s.raf = 0; return; }
-  el.scrollTop = s.last + diff * (1 - Math.pow(1 - 0.16, dt / 16.7));
+  // The first rAF timestamp can be earlier than the wheel handler's performance.now(): never a negative dt.
+  let dt = now - s.t; if (!(dt > 0)) dt = 16.7; dt = Math.min(64, dt); s.t = now;
+  const before = el.scrollTop, diff = s.target - before;
+  // Close enough: land exactly on the target and stop (no frame is requested while idle).
+  if (Math.abs(diff) < 1.5) { el.scrollTop = s.target; s.last = el.scrollTop; s.raf = 0; GLIDING.delete(el); return; }
+  // Eased step (factor 0.16 per 16.7 ms), at least 1 px so integer scrollTop never stalls.
+  let step = diff * (1 - Math.pow(1 - 0.16, dt / 16.7));
+  if (Math.abs(step) < 1) step = Math.sign(diff);
+  el.scrollTop = before + step;
   s.last = el.scrollTop;
-  if (Math.abs(el.scrollTop - s.target) < 0.5 || Math.abs(el.scrollTop - s.last) < 0.01 && Math.abs(el.scrollTop - s.target) < 1.5) { s.raf = 0; return; }
+  if (s.last === before) { stopGlide(el, s); return; } // can't move (content shrank): stop where we are, no jump
   s.raf = requestAnimationFrame(t => smoothStep(el, s, t));
 }
+// A scrolling key during a glide wins: stop the glide before the browser's own key scroll runs.
+document.addEventListener("keydown", e => {
+  if (!GLIDING.size || !/^(PageUp|PageDown|Home|End|ArrowUp|ArrowDown| )$/.test(e.key)) return;
+  for (const el of GLIDING) { const s = SMOOTH.get(el); if (s) stopGlide(el, s); }
+}, true);
 document.addEventListener("wheel", e => {
   if (RM.matches || e.ctrlKey || e.defaultPrevented || !e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
   if (e.deltaMode === 0 && Math.abs(e.deltaY) < 4) return;
@@ -1905,12 +1981,12 @@ document.addEventListener("wheel", e => {
   if (!s.raf) s.target = s.last = el.scrollTop;
   e.preventDefault();
   s.target = Math.max(0, Math.min(max, s.target + dy));
-  if (!s.raf) { s.t = performance.now(); s.raf = requestAnimationFrame(t => smoothStep(el, s, t)); }
+  if (!s.raf) { s.t = performance.now(); GLIDING.add(el); s.raf = requestAnimationFrame(t => smoothStep(el, s, t)); }
 }, { passive: false });
 document.addEventListener("scroll", e => {
   const el = e.target; if (!(el instanceof Element)) return;
   const s = SMOOTH.get(el); if (!s) return;
-  if (Math.abs(el.scrollTop - s.last) > 1.5) { cancelAnimationFrame(s.raf); s.raf = 0; s.target = s.last = el.scrollTop; }
+  if (Math.abs(el.scrollTop - s.last) > 1.5) stopGlide(el, s);
 }, true);
 send({ cmd: "ready" });
 </script>

@@ -80,14 +80,18 @@ fn file() -> &'static mut ScanFile {
     f
 }
 
-/// Read-modify-write of scan.tsv (a headless scan may have written it meanwhile).
+/// Read-modify-write of scan.tsv (a headless scan may have written it meanwhile). If it can't
+/// be saved (e.g. scan.tsv exists but can't be read), the cached list stays as it was.
 fn edit(change: impl FnOnce(&mut ScanFile)) {
     let a = app();
     let mut f = ScanFile::load(&data_dir());
     change(&mut f);
     f.regroup(&a.store.subs, today());
-    f.save(&data_dir());
-    a.scan.file = Some(f);
+    if f.save(&data_dir()) {
+        a.scan.file = Some(f);
+    } else {
+        send_js(&json!({"type": "toast", "text": crate::data::SAVE_FAILED}));
+    }
 }
 
 fn candidates() -> Vec<Value> {
@@ -325,6 +329,7 @@ fn start(months: u32) {
 fn backfill_subs() {
     let a = app();
     let found: Vec<(u32, String, i32, i32)> = file().c.iter().filter(|c| c.sub_id != 0).map(|c| (c.sub_id, c.icon.clone(), c.first, c.anchor)).collect();
+    let before = a.store.subs.clone();
     let mut changed = false;
     for (id, icon, first, anchor) in found {
         let Some(s) = a.store.subs.iter_mut().find(|s| s.id == id) else { continue };
@@ -338,7 +343,10 @@ fn backfill_subs() {
         }
     }
     if changed {
-        a.store.save_subs();
+        if !a.store.save_subs() {
+            a.store.subs = before;
+            send_js(&json!({"type": "toast", "text": crate::data::SAVE_FAILED}));
+        }
         send_js(&state_json());
     }
 }
